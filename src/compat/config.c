@@ -252,7 +252,7 @@ write_imap_server( FILE *fp, config_t *cfg )
 		if (sscanf( cfg->host, "%d.%d.%d.%d", &a1, &a2, &a3, &a4 ) == 4)
 			/* XXX this does not avoid clashes. add port? */
 			cfg->server_name = nfstrdup( cfg->host );
-		else {
+	else if (cfg->host) {
 			p = strrchr( cfg->host, '.' );
 			if (!p)
 				hl = nfsnprintf( buf, sizeof(buf), "%s", cfg->host );
@@ -271,6 +271,9 @@ write_imap_server( FILE *fp, config_t *cfg )
 			cfg->server_name = nfstrdup( buf );
 			cfg->servers = 1;
 		  gotsrv: ;
+	} else {
+		fprintf( stderr, "ERROR: Neither host nor tunnel specified for mailbox %s.\n", cfg->path );
+		exit( 1 );
 		}
 		fprintf( fp, "IMAPAccount %s\n", cfg->server_name );
 		if (cfg->use_imaps)
