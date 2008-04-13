@@ -1815,6 +1815,7 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep, int *err )
 		if (!store->server) {
 			store->server = nfmalloc( sizeof(sserver) );
 			memcpy( store->server, &sserver, sizeof(sserver) );
+			store->server->name = store->gen.name;
 		} else if (acc_opt) {
 			fprintf( stderr, "IMAP store '%s' has both Account and account-specific options\n", store->gen.name );
 			*err = 1;
