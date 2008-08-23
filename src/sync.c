@@ -474,7 +474,7 @@ sync_boxes( store_t *mctx, const char *mname,
 
 	nmmsg = nsmsg = 0;
 
-	mctx->uidvalidity = sctx->uidvalidity = 0;
+	mctx->uidvalidity = sctx->uidvalidity = -1;
 	mopts = sopts = 0;
 	makeopts( chan->sops, chan->slave, &sopts, chan->master, &mopts );
 	makeopts( chan->mops, chan->master, &mopts, chan->slave, &sopts );
@@ -510,7 +510,8 @@ sync_boxes( store_t *mctx, const char *mname,
 	nfasprintf( &jname, "%s.journal", dname );
 	nfasprintf( &nname, "%s.new", dname );
 	nfasprintf( &lname, "%s.lock", dname );
-	muidval = suidval = smaxxuid = mmaxuid = smaxuid = 0;
+	muidval = suidval = -1;
+	smaxxuid = mmaxuid = smaxuid = 0;
 	memset( &lck, 0, sizeof(lck) );
 #if SEEK_SET != 0
 	lck.l_whence = SEEK_SET;
@@ -705,7 +706,7 @@ sync_boxes( store_t *mctx, const char *mname,
 	info( "%d messages, %d recent\n", sctx->count, sctx->recent );
 	dump_box( sctx );
 
-	if (suidval && suidval != sctx->uidvalidity) {
+	if (suidval >= 0 && suidval != sctx->uidvalidity) {
 		fprintf( stderr, "Error: UIDVALIDITY of slave changed\n" );
 		ret = SYNC_FAIL;
 		goto bail;
@@ -809,13 +810,13 @@ sync_boxes( store_t *mctx, const char *mname,
 	info( "%d messages, %d recent\n", mctx->count, mctx->recent );
 	dump_box( mctx );
 
-	if (muidval && muidval != mctx->uidvalidity) {
+	if (muidval >= 0 && muidval != mctx->uidvalidity) {
 		fprintf( stderr, "Error: UIDVALIDITY of master changed\n" );
 		ret = SYNC_FAIL;
 		goto finish;
 	}
 
-	if (!muidval || !suidval) {
+	if (muidval < 0 || suidval < 0) {
 		muidval = mctx->uidvalidity;
 		suidval = sctx->uidvalidity;
 		Fprintf( jfp, "| %d %d\n", muidval, suidval );
