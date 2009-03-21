@@ -1586,6 +1586,7 @@ imap_store_msg( store_t *gctx, msg_data_t *data, int *uid )
 			}
 		/* invalid message */
 		free( fmap );
+		fprintf( stderr, "IMAP warning: storing message with incomplete header.\n" );
 		return DRV_MSG_BAD;
 	 mktid:
 		for (j = 0; j < TUIDL; j++)

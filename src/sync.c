@@ -301,6 +301,13 @@ sync_old( int tops, store_t *sctx, store_t *tctx, store_conf_t *tconf, FILE *jfp
 					case DRV_OK:
 						smsg->flags = msgdata.flags;
 						switch (tdriver->store_msg( tctx, &msgdata, &uid )) {
+						case DRV_MSG_BAD:
+							warn( pull ?
+							      "Warning: Slave refuses to store message %d from master.\n" :
+							      "Warning: Master refuses to store message %d from slave.\n",
+							      smsg->uid );
+							smsg->status |= M_NOT_SYNCED;
+							break;
 						case DRV_STORE_BAD: return pull ? SYNC_SLAVE_BAD : SYNC_MASTER_BAD;
 						default: return SYNC_FAIL;
 						case DRV_OK:
@@ -399,6 +406,13 @@ sync_new( int tops, store_t *sctx, store_t *tctx, store_conf_t *tconf, FILE *jfp
 						}
 						msg->flags = msgdata.flags;
 						switch (tdriver->store_msg( tctx, &msgdata, &uid )) {
+						case DRV_MSG_BAD:
+							warn( pull ?
+							      "Warning: Slave refuses to store message %d from master.\n" :
+							      "Warning: Master refuses to store message %d from slave.\n",
+							      msg->uid );
+							msg->status |= M_NOT_SYNCED;
+							continue;
 						case DRV_STORE_BAD: return pull ? SYNC_SLAVE_BAD : SYNC_MASTER_BAD;
 						default: return SYNC_FAIL;
 						case DRV_OK: break;
