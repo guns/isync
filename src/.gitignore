@@ -1,4 +1,6 @@
 .deps
 Makefile
 Makefile.in
-isync
+mbsync
+mdconvert
+*.o
