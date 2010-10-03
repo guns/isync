@@ -1280,7 +1280,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 #if HAVE_LIBSSL
 	if (srvc->use_imaps) {
 		if (start_tls( ctx ))
-			goto bail;
+			goto ssl_bail;
 		use_ssl = 1;
 	}
 #endif
@@ -1314,7 +1314,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 				if (imap_exec( ctx, 0, "STARTTLS" ) != RESP_OK)
 					goto bail;
 				if (start_tls( ctx ))
-					goto bail;
+					goto ssl_bail;
 				use_ssl = 1;
 
 				if (imap_exec( ctx, 0, "CAPABILITY" ) != RESP_OK)
@@ -1399,6 +1399,12 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 	ctx->trashnc = 1;
 	return (store_t *)ctx;
 
+#if HAVE_LIBSSL
+  ssl_bail:
+	/* This avoids that we try to send LOGOUT to an unusable socket. */
+	close( imap->buf.sock.fd );
+	imap->buf.sock.fd = -1;
+#endif
   bail:
 	imap_close_store( &ctx->gen );
 	return 0;
