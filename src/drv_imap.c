@@ -44,7 +44,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 # include <openssl/ssl.h>
 # include <openssl/err.h>
 # include <openssl/hmac.h>
@@ -59,7 +59,7 @@ typedef struct imap_server_conf {
 	int port;
 	char *user;
 	char *pass;
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	char *cert_file;
 	unsigned use_imaps:1;
 	unsigned require_ssl:1;
@@ -92,7 +92,7 @@ typedef struct _list {
 
 typedef struct {
 	int fd;
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	SSL *ssl;
 	unsigned int use_ssl:1;
 #endif
@@ -117,7 +117,7 @@ typedef struct imap {
 	/* command queue */
 	int nexttag, num_in_progress, literal_pending;
 	struct imap_cmd *in_progress, **in_progress_append;
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	SSL_CTX *SSLContext;
 #endif
 	buffer_t buf; /* this is BIG, so put it last */
@@ -154,7 +154,7 @@ enum CAPABILITY {
 	UIDPLUS,
 	LITERALPLUS,
 	NAMESPACE,
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	CRAM,
 	STARTTLS,
 #endif
@@ -165,7 +165,7 @@ static const char *cap_list[] = {
 	"UIDPLUS",
 	"LITERAL+",
 	"NAMESPACE",
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	"AUTH=CRAM-MD5",
 	"STARTTLS",
 #endif
@@ -186,7 +186,7 @@ static const char *Flags[] = {
 	"Deleted",
 };
 
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 
 static int
 host_matches( const char *host, const char *pattern )
@@ -339,7 +339,7 @@ init_ssl_ctx( imap_store_t *ctx )
 static void
 socket_perror( const char *func, Socket_t *sock, int ret )
 {
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	int err;
 
 	if (sock->use_ssl) {
@@ -373,7 +373,7 @@ static int
 socket_read( Socket_t *sock, char *buf, int len )
 {
 	int n =
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 		sock->use_ssl ? SSL_read( sock->ssl, buf, len ) :
 #endif
 		read( sock->fd, buf, len );
@@ -389,7 +389,7 @@ static int
 socket_write( Socket_t *sock, char *buf, int len )
 {
 	int n =
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 		sock->use_ssl ? SSL_write( sock->ssl, buf, len ) :
 #endif
 		write( sock->fd, buf, len );
@@ -410,7 +410,7 @@ socket_pending( Socket_t *sock )
 		return -1;
 	if (num > 0)
 		return num;
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	if (sock->use_ssl)
 		return SSL_pending( sock->ssl );
 #endif
@@ -1260,7 +1260,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 	struct hostent *he;
 	struct sockaddr_in addr;
 	int s, a[2], preauth;
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	int use_ssl;
 #endif
 
@@ -1280,7 +1280,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 	imap->in_progress_append = &imap->in_progress;
 
 	/* open connection to IMAP server */
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	use_ssl = 0;
 #endif
 
@@ -1338,7 +1338,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 		imap->buf.sock.fd = s;
 	}
 
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	if (srvc->use_imaps) {
 		if (start_tls( ctx ))
 			goto ssl_bail;
@@ -1368,7 +1368,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 		goto bail;
 
 	if (!preauth) {
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 		if (!srvc->use_imaps && (srvc->use_sslv2 || srvc->use_sslv3 || srvc->use_tlsv1)) {
 			/* always try to select SSL support if available */
 			if (CAP(STARTTLS)) {
@@ -1413,7 +1413,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 			 */
 			srvc->pass = nfstrdup( arg );
 		}
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 		if (CAP(CRAM)) {
 			struct imap_cmd_cb cb;
 
@@ -1432,7 +1432,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 				fprintf( stderr, "Skipping account %s@%s, server forbids LOGIN\n", srvc->user, srvc->host );
 				goto bail;
 			}
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 			if (!use_ssl)
 #endif
 				warn( "*** IMAP Warning *** Password is being sent in the clear\n" );
@@ -1460,7 +1460,7 @@ imap_open_store( store_conf_t *conf, store_t *oldctx )
 	ctx->trashnc = 1;
 	return (store_t *)ctx;
 
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
   ssl_bail:
 	/* This avoids that we try to send LOGOUT to an unusable socket. */
 	close( imap->buf.sock.fd );
@@ -1792,7 +1792,7 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep, int *err )
 	} else
 		return 0;
 
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 	/* this will probably annoy people, but its the best default just in
 	 * case people forget to turn it on
 	 */
@@ -1803,7 +1803,7 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep, int *err )
 	while (getcline( cfg ) && cfg->cmd) {
 		if (!strcasecmp( "Host", cfg->cmd )) {
 			/* The imap[s]: syntax is just a backwards compat hack. */
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 			if (!memcmp( "imaps:", cfg->val, 6 )) {
 				cfg->val += 6;
 				server->use_imaps = 1;
@@ -1825,7 +1825,7 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep, int *err )
 			server->pass = nfstrdup( cfg->val );
 		else if (!strcasecmp( "Port", cfg->cmd ))
 			server->port = parse_int( cfg );
-#if HAVE_LIBSSL
+#ifdef HAVE_LIBSSL
 		else if (!strcasecmp( "CertificateFile", cfg->cmd )) {
 			server->cert_file = expand_strdup( cfg->val );
 			if (access( server->cert_file, R_OK )) {
