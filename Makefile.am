@@ -54,6 +54,7 @@ log:
 	   git log --date=iso --log-size --name-only | \
 	     perl -e '$(LOG_PL)' > ChangeLog )
 
+if in_source_build
 deb:
 	CFLAGS="-O2 -mcpu=i686" fakeroot debian/rules binary
 
@@ -65,6 +66,7 @@ distdir distclean: deb-clean
 
 dist-hook:
 	find $(distdir)/debian \( -name .git -o -name .gitignore -o -name .#\*# -o -type l \) -print0 | xargs -0r rm -rf
+endif
 
 dist-sign: dist
 	gpg -b -a $(PACKAGE)-$(VERSION).tar.gz

@@ -94,6 +94,8 @@ if test "x$ob_cv_enable_compat" != xno; then
 fi
 AM_CONDITIONAL(with_compat, test "x$ob_cv_enable_compat" != xno)
 
+AM_CONDITIONAL(in_source_build, test "x$srcdir" = x.)
+
 AC_OUTPUT(Makefile src/Makefile src/compat/Makefile isync.spec)
 
 if test -n "$have_ssl_paths"; then
