@@ -119,7 +119,7 @@ dump_box( store_t *ctx )
 	if (Debug)
 		for (msg = ctx->msgs; msg; msg = msg->next) {
 			make_flags( msg->flags, fbuf );
-			printf( "  message %d, %s, %d\n", msg->uid, fbuf, msg->size );
+			printf( "  message %d, %s, %lu\n", msg->uid, fbuf, msg->size );
 		}
 }
 
