@@ -48,6 +48,7 @@
 # include <openssl/ssl.h>
 # include <openssl/err.h>
 # include <openssl/hmac.h>
+# include <openssl/x509v3.h>
 #endif
 
 typedef struct imap_server_conf {
@@ -187,9 +188,65 @@ static const char *Flags[] = {
 
 #if HAVE_LIBSSL
 
+static int
+host_matches( const char *host, const char *pattern )
+{
+	if (pattern[0] == '*' && pattern[1] == '.') {
+		pattern += 2;
+		if (!(host = strchr( host, '.' )))
+			return 0;
+		host++;
+	}
+
+	return *host && *pattern && !strcasecmp( host, pattern );
+}
+
+static int
+verify_hostname( X509 *cert, const char *hostname )
+{
+	int i, len, found;
+	X509_NAME *subj;
+	STACK_OF(GENERAL_NAME) *subj_alt_names;
+	char cname[1000];
+
+	/* try the DNS subjectAltNames */
+	found = 0;
+	if ((subj_alt_names = X509_get_ext_d2i( cert, NID_subject_alt_name, NULL, NULL ))) {
+		int num_subj_alt_names = sk_GENERAL_NAME_num( subj_alt_names );
+		for (i = 0; i < num_subj_alt_names; i++) {
+			GENERAL_NAME *subj_alt_name = sk_GENERAL_NAME_value( subj_alt_names, i );
+			if (subj_alt_name->type == GEN_DNS &&
+			    strlen( (const char *)subj_alt_name->d.ia5->data ) == (size_t)subj_alt_name->d.ia5->length &&
+			    host_matches( hostname, (const char *)(subj_alt_name->d.ia5->data) ))
+			{
+				found = 1;
+				break;
+			}
+		}
+		sk_GENERAL_NAME_pop_free( subj_alt_names, GENERAL_NAME_free );
+	}
+	if (found)
+		return 0;
+
+	/* try the common name */
+	if (!(subj = X509_get_subject_name( cert ))) {
+		fprintf( stderr, "Error, cannot get certificate subject\n" );
+		return -1;
+	}
+	if ((len = X509_NAME_get_text_by_NID( subj, NID_commonName, cname, sizeof(cname) )) < 0) {
+		fprintf( stderr, "Error, cannot get certificate common name\n" );
+		return -1;
+	}
+	if (strlen( cname ) == (size_t)len && host_matches( hostname, cname ))
+		return 0;
+
+	fprintf( stderr, "Error, certificate owner does not match hostname %s\n", hostname );
+	return -1;
+}
+
 /* this gets called when a certificate is to be verified */
 static int
-verify_cert( SSL *ssl )
+verify_cert( SSL *ssl, const char *hostname )
 {
 	X509 *cert;
 	int err;
@@ -204,12 +261,16 @@ verify_cert( SSL *ssl )
 	}
 
 	err = SSL_get_verify_result( ssl );
-	if (err == X509_V_OK)
-		return 0;
+	if (err != X509_V_OK) {
+		fprintf( stderr, "Error, can't verify certificate: %s (%d)\n",
+		         X509_verify_cert_error_string(err), err );
+		goto intcheck;
+	}
+	if (hostname && verify_hostname( cert, hostname ) < 0)
+		goto intcheck;
+	return 0;
 
-	fprintf( stderr, "Error, can't verify certificate: %s (%d)\n",
-	         X509_verify_cert_error_string(err), err );
-
+  intcheck:
 	X509_NAME_oneline( X509_get_subject_name( cert ), buf, sizeof(buf) );
 	info( "\nSubject: %s\n", buf );
 	X509_NAME_oneline( X509_get_issuer_name( cert ), buf, sizeof(buf) );
@@ -1103,7 +1164,7 @@ start_tls( imap_store_t *ctx )
 	}
 
 	/* verify the server certificate */
-	if (verify_cert( imap->buf.sock.ssl ))
+	if (verify_cert( imap->buf.sock.ssl, ((imap_store_conf_t *)ctx->gen.conf)->server->host ))
 		return 1;
 
 	imap->buf.sock.use_ssl = 1;
