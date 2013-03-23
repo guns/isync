@@ -936,7 +936,7 @@ maildir_store_msg( store_t *gctx, msg_data_t *data, int *uid )
 	int ret, fd, bl;
 	char buf[_POSIX_PATH_MAX], nbuf[_POSIX_PATH_MAX], fbuf[NUM_FLAGS + 3], base[128];
 
-	bl = nfsnprintf( base, sizeof(base), "%ld.%d_%d.%s", time( 0 ), Pid, ++MaildirCount, Hostname );
+	bl = nfsnprintf( base, sizeof(base), "%ld.%d_%d.%s", (long)time( 0 ), Pid, ++MaildirCount, Hostname );
 	if (uid) {
 #ifdef USE_DB
 		if (ctx->db) {
@@ -1087,7 +1087,7 @@ maildir_trash_msg( store_t *gctx, message_t *gmsg )
 		nfsnprintf( buf, sizeof(buf), "%s/%s/%s", gctx->path, subdirs[gmsg->status & M_RECENT], msg->base );
 		s = strstr( msg->base, ":2," );
 		nfsnprintf( nbuf, sizeof(nbuf), "%s%s/%s/%ld.%d_%d.%s%s", gctx->conf->path, gctx->conf->trash,
-		            subdirs[gmsg->status & M_RECENT], time( 0 ), Pid, ++MaildirCount, Hostname, s ? s : "" );
+		            subdirs[gmsg->status & M_RECENT], (long)time( 0 ), Pid, ++MaildirCount, Hostname, s ? s : "" );
 		if (!rename( buf, nbuf ))
 			break;
 		if (!stat( buf, &st )) {
