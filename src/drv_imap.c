@@ -473,7 +473,7 @@ next_arg( char **s )
 	if (**s == '"') {
 		++*s;
 		ret = *s;
-		*s = strchr( *s, '"' );
+		*s = unescaped_strchr( *s, '"' );
 	} else {
 		ret = *s;
 		while (**s && !isspace( (unsigned char) **s ))
@@ -1136,7 +1136,7 @@ imap_socket_read( void *aux )
 						cmd2->gen.param.high_prio = 1;
 						p = strchr( cmdp->cmd, '"' );
 						if (imap_exec( ctx, &cmd2->gen, get_cmd_result_p2,
-						               "CREATE %.*s", strchr( p + 1, '"' ) - p + 1, p ) < 0)
+						               "CREATE %.*s", unescaped_strchr( p + 1, '"' ) - p + 1, p ) < 0)
 							return;
 						continue;
 					}

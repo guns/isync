@@ -433,6 +433,7 @@ void free_generic_messages( message_t * );
 #ifndef HAVE_MEMRCHR
 void *memrchr( const void *s, int c, size_t n );
 #endif
+char *unescaped_strchr( const char *s, int c );
 
 void *nfmalloc( size_t sz );
 void *nfcalloc( size_t sz );

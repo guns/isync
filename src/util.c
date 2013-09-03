@@ -210,6 +210,28 @@ memrchr( const void *s, int c, size_t n )
 }
 #endif
 
+/* Like strchr, but skips instances of c preceded by a backslash */
+char *
+unescaped_strchr( const char *s, int c )
+{
+	char *p = (char *)s;
+	char accept[2];
+
+	accept[0] = '\\';
+	accept[1] = c;
+
+	while ((p = strpbrk( p, accept )) != NULL) {
+		if (*p == '\\') {
+			/* Advance twice to skip the escaped char */
+			if (*++p == 0) { p = NULL; break; }
+			if (*++p == 0) { p = NULL; break; }
+		} else
+			break;
+	}
+
+	return p;
+}
+
 void
 oob( void )
 {
