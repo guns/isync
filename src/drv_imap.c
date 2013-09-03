@@ -48,6 +48,10 @@ typedef struct imap_server_conf {
 #endif
 } imap_server_conf_t;
 
+/* Worst case quoted length: every char escaped + 2 quote chars + \0 */
+#define MAX_PASS_LEN 80
+#define MAX_QUOTED_PASS_LEN (MAX_PASS_LEN * 2) + 3
+
 typedef struct imap_store_conf {
 	store_conf_t gen;
 	imap_server_conf_t *server;
@@ -353,6 +357,30 @@ submit_imap_cmd( imap_store_t *ctx, struct imap_cmd *cmd )
 	}
 
 	return send_imap_cmd( ctx, cmd );
+}
+
+/* RFC 3501 quoted string:
+ *
+ * quoted          = DQUOTE *QUOTED-CHAR DQUOTE
+ * QUOTED-CHAR     = <any TEXT-CHAR except quoted-specials> / "\" quoted-specials
+ * quoted-specials = DQUOTE / "\"
+ */
+void
+imap_quote( char *p, const char *s, size_t len )
+{
+	char c;
+	size_t i = 0, j = 0;
+
+	p[j++] = '"';
+
+	while (j < len - 2 && (c = s[i++]) != 0) {
+		if (c == '\\' || c == '"')
+			p[j++] = '\\';
+		p[j++] = c;
+	}
+
+	p[j++] = '"';
+	p[j] = 0;
 }
 
 static int
@@ -1491,7 +1519,7 @@ imap_open_store_authenticate2( imap_store_t *ctx )
 {
 	imap_store_conf_t *cfg = (imap_store_conf_t *)ctx->gen.conf;
 	imap_server_conf_t *srvc = cfg->server;
-	char *arg;
+	char *arg, user[MAX_QUOTED_PASS_LEN], pass[MAX_QUOTED_PASS_LEN];
 
 	info ("Logging in...\n");
 	if (!srvc->user) {
@@ -1501,7 +1529,7 @@ imap_open_store_authenticate2( imap_store_t *ctx )
 	if (srvc->pass_cmd) {
 		FILE *fp;
 		int ret;
-		char buffer[80];
+		char buffer[MAX_PASS_LEN];
 
 		if (!(fp = popen( srvc->pass_cmd, "r" ))) {
 		  pipeerr:
@@ -1527,7 +1555,7 @@ imap_open_store_authenticate2( imap_store_t *ctx )
 		free( srvc->pass ); /* From previous runs */
 		srvc->pass = nfstrdup( buffer );
 	} else if (!srvc->pass) {
-		char prompt[80];
+		char prompt[MAX_PASS_LEN];
 		sprintf( prompt, "Password (%s): ", srvc->name );
 		arg = getpass( prompt );
 		if (!arg) {
@@ -1566,8 +1594,10 @@ imap_open_store_authenticate2( imap_store_t *ctx )
 	if (!ctx->conn.ssl)
 #endif
 		warn( "*** IMAP Warning *** Password is being sent in the clear\n" );
+	imap_quote(user, srvc->user, MAX_QUOTED_PASS_LEN);
+	imap_quote(pass, srvc->pass, MAX_QUOTED_PASS_LEN);
 	imap_exec( ctx, 0, imap_open_store_authenticate2_p2,
-	           "LOGIN \"%s\" \"%s\"", srvc->user, srvc->pass );
+	           "LOGIN %s %s", user, pass );
 	return;
 
   bail:
