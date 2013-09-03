@@ -63,22 +63,39 @@ get_arg( conffile_t *cfile, int required, int *comment )
 			cfile->err = 1;
 		}
 		ret = 0;
-	} else {
-		for (quoted = 0, ret = t = p; c; c = *p) {
-			p++;
-			if (c == '"')
-				quoted ^= 1;
-			else if (!quoted && isspace( (unsigned char) c ))
+	} else if (c == '"') {
+		/* Strip quotes and unescape \\ and \" */
+		quoted = 1;
+		ret = t = ++p;
+		while ((c = *p++) != 0) {
+			if (c == '\\') {
+				c = *p++;
+				if (c == '\\' || c == '"')
+					*t++ = c;
+				else {
+					error( "%s:%d: unsupported escape sequence '\\%c'\n",
+					       cfile->file, cfile->line, c );
+					cfile->err = 1;
+					quoted = 0;
+					ret = p = 0;
+					break;
+				}
+			} else if (c == '"') {
+				*t = quoted = 0;
 				break;
-			else
+			} else
 				*t++ = c;
 		}
-		*t = 0;
 		if (quoted) {
 			error( "%s:%d: missing closing quote\n", cfile->file, cfile->line );
 			cfile->err = 1;
-			ret = 0;
+			ret = p = 0;
 		}
+	} else {
+		ret = p;
+		while (*p != 0 && !isspace( (unsigned char) *p ))
+			p++;
+		*p++ = 0;
 	}
 	cfile->rest = p;
 	return ret;
