@@ -620,9 +620,12 @@ parse_imap_list( imap_store_t *ctx, char **sp, parse_list_state_t *sts )
 			/* quoted string */
 			s++;
 			p = s;
-			for (; *s != '"'; s++)
+			for (; *s != '"'; s++) {
+				if (*s == '\\')
+					s++;
 				if (!*s)
 					goto bail;
+			}
 			cur->len = s - p;
 			s++;
 			cur->val = nfmalloc( cur->len + 1 );
