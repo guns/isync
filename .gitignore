@@ -27,3 +27,7 @@ stamp-h
 stamp-h.in
 stamp-h1
 *~
+
+/compile
+/pkg/
+/*.tar.xz*
