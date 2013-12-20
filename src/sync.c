@@ -166,24 +166,8 @@ typedef struct {
 } sync_vars_t;
 
 static void sync_ref( sync_vars_t *svars ) { ++svars->ref_count; }
-static int sync_deref( sync_vars_t *svars );
-static int deref_check_cancel( sync_vars_t *svars );
+static void sync_deref( sync_vars_t *svars );
 static int check_cancel( sync_vars_t *svars );
-
-#define DRIVER_CALL_RET(call) \
-	do { \
-		sync_ref( svars ); \
-		svars->drv[t]->call; \
-		return deref_check_cancel( svars ); \
-	} while (0)
-
-#define DRIVER_CALL(call) \
-	do { \
-		sync_ref( svars ); \
-		svars->drv[t]->call; \
-		if (deref_check_cancel( svars )) \
-			return; \
-	} while (0)
 
 #define AUX &svars->t[t]
 #define INV_AUX &svars->t[1-t]
@@ -198,13 +182,12 @@ static int check_cancel( sync_vars_t *svars );
 	sync_vars_t *svars = (sync_vars_t *)(((char *)(&((int *)aux)[-t])) - offsetof(sync_vars_t, t))
 
 /* operation dependencies:
-   select(S): -
-   select(M): select(S) | -
-   new(M), new(S), flags(M): select(M) & select(S)
-   flags(S): count(new(S))
+   select(x): -
+   load(x): select(x)
+   new(M), new(S), flags(M), flags(S): load(M) & load(S)
    find_new(x): new(x)
    trash(x): flags(x)
-   close(x): trash(x) & find_new(x) // with expunge
+   close(x): trash(x) & find_new(x) & new(!x) // with expunge
    cleanup: close(M) & close(S)
 */
 
@@ -220,6 +203,7 @@ static int check_cancel( sync_vars_t *svars );
 #define ST_CANCELED        (1<<9)
 #define ST_SELECTED        (1<<10)
 #define ST_DID_EXPUNGE     (1<<11)
+#define ST_CLOSING         (1<<12)
 
 
 static void
@@ -282,7 +266,7 @@ typedef struct copy_vars {
 
 static void msg_fetched( int sts, void *aux );
 
-static int
+static void
 copy_msg( copy_vars_t *vars )
 {
 	DECL_INIT_SVARS(vars->aux);
@@ -290,7 +274,7 @@ copy_msg( copy_vars_t *vars )
 	t ^= 1;
 	vars->data.flags = vars->msg->flags;
 	vars->data.date = svars->chan->use_internal_date ? -1 : 0;
-	DRIVER_CALL_RET(fetch_msg( svars->ctx[t], vars->msg, &vars->data, msg_fetched, vars ));
+	svars->drv[t]->fetch_msg( svars->ctx[t], vars->msg, &vars->data, msg_fetched, vars );
 }
 
 static void msg_stored( int sts, int uid, void *aux );
@@ -534,14 +518,6 @@ store_bad( void *aux )
 }
 
 static int
-deref_check_cancel( sync_vars_t *svars )
-{
-	if (sync_deref( svars ))
-		return -1;
-	return check_cancel( svars );
-}
-
-static int
 check_cancel( sync_vars_t *svars )
 {
 	return (svars->state[M] | svars->state[S]) & (ST_SENT_CANCEL | ST_CANCELED);
@@ -640,13 +616,17 @@ sync_boxes( store_t *ctx[], const char *names[], channel_conf_t *chan,
 	}
 	/* Both boxes must be fully set up at this point, so that error exit paths
 	 * don't run into uninitialized variables. */
+	sync_ref( svars );
 	for (t = 0; t < 2; t++) {
 		info( "Selecting %s %s...\n", str_ms[t], ctx[t]->orig_name );
-		DRIVER_CALL(select( ctx[t], (chan->ops[t] & OP_CREATE) != 0, box_selected, AUX ));
+		svars->drv[t]->select( ctx[t], (chan->ops[t] & OP_CREATE) != 0, box_selected, AUX );
+		if (check_cancel( svars ))
+			break;
 	}
+	sync_deref( svars );
 }
 
-static int load_box( sync_vars_t *svars, int t, int minwuid, int *mexcs, int nmexcs );
+static void load_box( sync_vars_t *svars, int t, int minwuid, int *mexcs, int nmexcs );
 
 static void
 box_selected( int sts, void *aux )
@@ -1038,7 +1018,7 @@ box_selected( int sts, void *aux )
 			/* First, find out the lower bound for the bulk fetch. */
 			minwuid = INT_MAX;
 			for (srec = svars->srecs; srec; srec = srec->next) {
-				if (srec->status & S_DEAD)
+				if ((srec->status & S_DEAD) || srec->uid[M] <= 0)
 					continue;
 				if (srec->status & S_EXPIRED) {
 					if (!srec->uid[S]) {
@@ -1083,14 +1063,16 @@ box_selected( int sts, void *aux )
 	} else {
 		minwuid = INT_MAX;
 	}
-	if (load_box( svars, M, minwuid, mexcs, nmexcs ))
-		return;
-	load_box( svars, S, (ctx[S]->opts & OPEN_OLD) ? 1 : INT_MAX, 0, 0 );
+	sync_ref( svars );
+	load_box( svars, M, minwuid, mexcs, nmexcs );
+	if (!check_cancel( svars ))
+		load_box( svars, S, (ctx[S]->opts & OPEN_OLD) ? 1 : INT_MAX, 0, 0 );
+	sync_deref( svars );
 }
 
 static void box_loaded( int sts, void *aux );
 
-static int
+static void
 load_box( sync_vars_t *svars, int t, int minwuid, int *mexcs, int nmexcs )
 {
 	sync_rec_t *srec;
@@ -1109,7 +1091,7 @@ load_box( sync_vars_t *svars, int t, int minwuid, int *mexcs, int nmexcs )
 		maxwuid = 0;
 	info( "Loading %s...\n", str_ms[t] );
 	debug( maxwuid == INT_MAX ? "loading %s [%d,inf]\n" : "loading %s [%d,%d]\n", str_ms[t], minwuid, maxwuid );
-	DRIVER_CALL_RET(load( svars->ctx[t], minwuid, maxwuid, svars->newuid[t], mexcs, nmexcs, box_loaded, AUX ));
+	svars->drv[t]->load( svars->ctx[t], minwuid, maxwuid, svars->newuid[t], mexcs, nmexcs, box_loaded, AUX );
 }
 
 typedef struct {
@@ -1125,7 +1107,7 @@ typedef struct {
 
 static void flags_set( int sts, void *aux );
 static void flags_set_p2( sync_vars_t *svars, sync_rec_t *srec, int t );
-static int msgs_flags_set( sync_vars_t *svars, int t );
+static void msgs_flags_set( sync_vars_t *svars, int t );
 static void msg_copied( int sts, int uid, copy_vars_t *vars );
 static void msg_copied_p2( sync_vars_t *svars, sync_rec_t *srec, int t, int uid );
 static void msgs_copied( sync_vars_t *svars, int t );
@@ -1459,6 +1441,8 @@ box_loaded( int sts, void *aux )
 		}
 	}
 
+	sync_ref( svars );
+
 	debug( "synchronizing flags\n" );
 	for (srec = svars->srecs; srec; srec = srec->next) {
 		if ((srec->status & S_DEAD) || srec->uid[M] <= 0 || srec->uid[S] <= 0)
@@ -1502,7 +1486,9 @@ box_loaded( int sts, void *aux )
 				fv->srec = srec;
 				fv->aflags = aflags;
 				fv->dflags = dflags;
-				DRIVER_CALL(set_flags( svars->ctx[t], srec->msg[t], srec->uid[t], aflags, dflags, flags_set, fv ));
+				svars->drv[t]->set_flags( svars->ctx[t], srec->msg[t], srec->uid[t], aflags, dflags, flags_set, fv );
+				if (check_cancel( svars ))
+					goto out;
 			} else
 				flags_set_p2( svars, srec, t );
 		}
@@ -1510,8 +1496,9 @@ box_loaded( int sts, void *aux )
 	for (t = 0; t < 2; t++) {
 		svars->drv[t]->commit( svars->ctx[t] );
 		svars->state[t] |= ST_SENT_FLAGS;
-		if (msgs_flags_set( svars, t ))
-			return;
+		msgs_flags_set( svars, t );
+		if (check_cancel( svars ))
+			goto out;
 	}
 
 	debug( "propagating new messages\n" );
@@ -1528,13 +1515,19 @@ box_loaded( int sts, void *aux )
 				cv->aux = AUX;
 				cv->srec = srec;
 				cv->msg = tmsg;
-				if (copy_msg( cv ))
-					return;
+				copy_msg( cv );
+				if (check_cancel( svars ))
+					goto out;
 			}
 		}
 		svars->state[t] |= ST_SENT_NEW;
 		msgs_copied( svars, t );
+		if (check_cancel( svars ))
+			goto out;
 	}
+
+  out:
+	sync_deref( svars );
 }
 
 static void
@@ -1601,7 +1594,12 @@ msgs_copied( sync_vars_t *svars, int t )
 	if (!(svars->state[t] & ST_SENT_NEW) || svars->new_done[t] < svars->new_total[t])
 		return;
 
+	sync_ref( svars );
+
 	Fprintf( svars->jfp, "%c %d\n", ")("[t], svars->maxuid[1-t] );
+	sync_close( svars, 1-t );
+	if (check_cancel( svars ))
+		goto out;
 
 	if (svars->state[t] & ST_FIND_NEW) {
 		debug( "finding just copied messages on %s\n", str_ms[t] );
@@ -1609,6 +1607,9 @@ msgs_copied( sync_vars_t *svars, int t )
 	} else {
 		msgs_new_done( svars, t );
 	}
+
+  out:
+	sync_deref( svars );
 }
 
 static void
@@ -1687,14 +1688,16 @@ flags_set_p2( sync_vars_t *svars, sync_rec_t *srec, int t )
 static void msg_trashed( int sts, void *aux );
 static void msg_rtrashed( int sts, int uid, copy_vars_t *vars );
 
-static int
+static void
 msgs_flags_set( sync_vars_t *svars, int t )
 {
 	message_t *tmsg;
 	copy_vars_t *cv;
 
 	if (!(svars->state[t] & ST_SENT_FLAGS) || svars->flags_done[t] < svars->flags_total[t])
-		return 0;
+		return;
+
+	sync_ref( svars );
 
 	if ((svars->chan->ops[t] & OP_EXPUNGE) &&
 	    (svars->ctx[t]->conf->trash || (svars->ctx[1-t]->conf->trash && svars->ctx[1-t]->conf->trash_remote_new))) {
@@ -1706,10 +1709,9 @@ msgs_flags_set( sync_vars_t *svars, int t )
 						debug( "%s: trashing message %d\n", str_ms[t], tmsg->uid );
 						svars->trash_total[t]++;
 						stats( svars );
-						sync_ref( svars );
 						svars->drv[t]->trash_msg( svars->ctx[t], tmsg, msg_trashed, AUX );
-						if (deref_check_cancel( svars ))
-							return -1;
+						if (check_cancel( svars ))
+							goto out;
 					} else
 						debug( "%s: not trashing message %d - not new\n", str_ms[t], tmsg->uid );
 				} else {
@@ -1723,8 +1725,9 @@ msgs_flags_set( sync_vars_t *svars, int t )
 							cv->aux = INV_AUX;
 							cv->srec = 0;
 							cv->msg = tmsg;
-							if (copy_msg( cv ))
-								return -1;
+							copy_msg( cv );
+							if (check_cancel( svars ))
+								goto out;
 						} else
 							debug( "%s: not remote trashing message %d - too big\n", str_ms[t], tmsg->uid );
 					} else
@@ -1734,7 +1737,9 @@ msgs_flags_set( sync_vars_t *svars, int t )
 	}
 	svars->state[t] |= ST_SENT_TRASH;
 	sync_close( svars, t );
-	return 0;
+
+  out:
+	sync_deref( svars );
 }
 
 static void
@@ -1778,9 +1783,13 @@ static void box_closed_p2( sync_vars_t *svars, int t );
 static void
 sync_close( sync_vars_t *svars, int t )
 {
-	if ((~svars->state[t] & (ST_FOUND_NEW|ST_SENT_TRASH)) ||
-	    svars->trash_done[t] < svars->trash_total[t])
+	if ((~svars->state[t] & (ST_FOUND_NEW|ST_SENT_TRASH)) || svars->trash_done[t] < svars->trash_total[t] ||
+	    !(svars->state[1-t] & ST_SENT_NEW) || svars->new_done[1-t] < svars->new_total[1-t])
 		return;
+
+	if (svars->state[t] & ST_CLOSING)
+		return;
+	svars->state[t] |= ST_CLOSING;
 
 	if ((svars->chan->ops[t] & OP_EXPUNGE) /*&& !(svars->state[t] & ST_TRASH_BAD)*/) {
 		debug( "expunging %s\n", str_ms[t] );
@@ -1810,8 +1819,6 @@ box_closed_p2( sync_vars_t *svars, int t )
 		return;
 
 	if (((svars->state[M] | svars->state[S]) & ST_DID_EXPUNGE) || svars->chan->max_messages) {
-		/* This cleanup is not strictly necessary, as the next full sync
-		   would throw out the dead entries anyway. But ... */
 		debug( "purging obsolete entries\n" );
 
 		minwuid = INT_MAX;
@@ -1914,7 +1921,8 @@ sync_bail3( sync_vars_t *svars )
 	sync_deref( svars );
 }
 
-static int sync_deref( sync_vars_t *svars )
+static void
+sync_deref( sync_vars_t *svars )
 {
 	if (!--svars->ref_count) {
 		void (*cb)( int sts, void *aux ) = svars->cb;
@@ -1922,7 +1930,5 @@ static int sync_deref( sync_vars_t *svars )
 		int ret = svars->ret;
 		free( svars );
 		cb( ret, aux );
-		return -1;
 	}
-	return 0;
 }
