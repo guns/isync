@@ -835,11 +835,11 @@ parse_date( const char *str )
 	memset( &datetime, 0, sizeof(datetime) );
 	if (!(end = strptime( str, "%d-%b-%Y %H:%M:%S ", &datetime )))
 		return -1;
-	if ((date = mktime( &datetime )) == -1)
+	if ((date = timegm( &datetime )) == -1)
 		return -1;
 	if (sscanf( end, "%3d%2d", &hours, &mins ) != 2)
 		return -1;
-	return date - (hours * 60 + mins) * 60 - timezone;
+	return date - (hours * 60 + mins) * 60;
 }
 
 static int
@@ -922,9 +922,10 @@ parse_fetch_rsp( imap_store_t *ctx, list_t *list, char *s ATTR_UNUSED )
 					if (!is_atom( tmp ) || strcmp( tmp->val, "]" ))
 						goto bfail;
 					tmp = tmp->next;
-					if (!is_atom( tmp ) || memcmp( tmp->val, "X-TUID: ", 8 ))
+					if (!is_atom( tmp ))
 						goto bfail;
-					tuid = tmp->val + 8;
+					if (!memcmp( tmp->val, "X-TUID: ", 8 ))
+						tuid = tmp->val + 8;
 				} else {
 				  bfail:
 					error( "IMAP error: unable to parse BODY[HEADER.FIELDS ...]\n" );
@@ -1817,6 +1818,7 @@ imap_select( store_t *gctx, int create,
 
 	free_generic_messages( gctx->msgs );
 	gctx->msgs = 0;
+	ctx->msgapp = &gctx->msgs;
 
 	if (prepare_box( &buf, ctx ) < 0) {
 		cb( DRV_BOX_BAD, aux );
@@ -1851,7 +1853,6 @@ imap_load( store_t *gctx, int minuid, int maxuid, int newuid, int *excs, int nex
 	} else {
 		struct imap_cmd_refcounted_state *sts = imap_refcounted_new_state( cb, aux );
 
-		ctx->msgapp = &ctx->gen.msgs;
 		sort_ints( excs, nexcs );
 		for (i = 0; i < nexcs; ) {
 			for (bl = 0; i < nexcs && bl < 960; i++) {
