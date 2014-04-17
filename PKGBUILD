@@ -1,6 +1,6 @@
 # Maintainer: Sung Pae <self@sungpae.com>
 pkgname=isync
-pkgver=1_0_2.235.gb6eb4f8
+pkgver=1_1_0.35.g64a6596
 pkgrel=1
 pkgdesc="Sung Pae's isync/mbsync build"
 arch=('x86_64')
