@@ -49,7 +49,7 @@ void
 Fclose( FILE *f, int safe )
 {
 	if ((safe && (fflush( f ) || (UseFSync && fdatasync( fileno( f ) )))) || fclose( f ) == EOF) {
-		sys_error( "Error: cannot close file. Disk full?" );
+		sys_error( "Error: cannot close file" );
 		exit( 1 );
 	}
 }
@@ -64,7 +64,7 @@ Fprintf( FILE *f, const char *msg, ... )
 	r = vfprintf( f, msg, va );
 	va_end( va );
 	if (r < 0) {
-		sys_error( "Error: cannot write file. Disk full?" );
+		sys_error( "Error: cannot write file" );
 		exit( 1 );
 	}
 }
@@ -787,7 +787,7 @@ box_selected( int sts, void *aux )
 		fclose( jfp );
 	} else {
 		if (errno != ENOENT) {
-			error( "Error: cannot read sync state %s\n", svars->dname );
+			sys_error( "Error: cannot read sync state %s", svars->dname );
 			goto bail;
 		}
 	}
@@ -932,7 +932,7 @@ box_selected( int sts, void *aux )
 		fclose( jfp );
 	} else {
 		if (errno != ENOENT) {
-			error( "Error: cannot read journal %s\n", svars->jname );
+			sys_error( "Error: cannot read journal %s", svars->jname );
 			goto bail;
 		}
 	}
@@ -948,11 +948,11 @@ box_selected( int sts, void *aux )
 		goto bail;
 
 	if (!(svars->nfp = fopen( svars->nname, "w" ))) {
-		error( "Error: cannot write new sync state %s\n", svars->nname );
+		sys_error( "Error: cannot create new sync state %s", svars->nname );
 		goto bail;
 	}
 	if (!(svars->jfp = fopen( svars->jname, "a" ))) {
-		error( "Error: cannot write journal %s\n", svars->jname );
+		sys_error( "Error: cannot create journal %s", svars->jname );
 		fclose( svars->nfp );
 		goto bail;
 	}
@@ -1360,7 +1360,7 @@ box_loaded( int sts, void *aux )
 				continue;
 			if (!(srec = tmsg->srec) || srec->uid[M] <= 0) {
 				/* We did not push the message, so it must be kept. */
-				debug( "  old pair(%d,%d) unpropagated\n", srec->uid[M], srec->uid[S] );
+				debug( "  message %d unpropagated\n", tmsg->uid );
 				todel--;
 			} else {
 				nflags = (tmsg->flags | srec->aflags[S]) & ~srec->dflags[S];
@@ -1875,8 +1875,10 @@ box_closed_p2( sync_vars_t *svars, int t )
 	Fclose( svars->jfp, 0 );
 	if (!(DFlags & KEEPJOURNAL)) {
 		/* order is important! */
-		rename( svars->nname, svars->dname );
-		unlink( svars->jname );
+		if (rename( svars->nname, svars->dname ))
+			warn( "Warning: cannot commit sync state %s\n", svars->dname );
+		else if (unlink( svars->jname ))
+			warn( "Warning: cannot delete journal %s\n", svars->jname );
 	}
 
 	sync_bail( svars );

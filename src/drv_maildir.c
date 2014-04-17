@@ -219,8 +219,10 @@ maildir_list_recurse( store_t *gctx, int isBox, int *flags, const char *inbox,
 		const char *ent = de->d_name;
 		pl = pathLen + nfsnprintf( path + pathLen, _POSIX_PATH_MAX - pathLen, "%s", ent );
 		if (inbox && !memcmp( path, inbox, pl ) && !inbox[pl]) {
-			if (maildir_list_inbox( gctx, flags ) < 0)
+			if (maildir_list_inbox( gctx, flags ) < 0) {
+				closedir( dir );
 				return -1;
+			}
 		} else {
 			if (*ent == '.') {
 				if (!isBox)
@@ -238,8 +240,10 @@ maildir_list_recurse( store_t *gctx, int isBox, int *flags, const char *inbox,
 				}
 			}
 			nl = nameLen + nfsnprintf( name + nameLen, _POSIX_PATH_MAX - nameLen, "%s", ent );
-			if (maildir_list_recurse( gctx, 1, flags, inbox, path, pl, name, nl ) < 0)
+			if (maildir_list_recurse( gctx, 1, flags, inbox, path, pl, name, nl ) < 0) {
+				closedir( dir );
 				return -1;
+			}
 		}
 	}
 	closedir (dir);
@@ -492,7 +496,7 @@ maildir_uidval_lock( maildir_store_t *ctx )
 		return DRV_BOX_BAD;
 	}
 	lseek( ctx->uvfd, 0, SEEK_SET );
-	if ((n = read( ctx->uvfd, buf, sizeof(buf) )) <= 0 ||
+	if ((n = read( ctx->uvfd, buf, sizeof(buf) - 1 )) <= 0 ||
 	    (buf[n] = 0, sscanf( buf, "%d\n%d", &ctx->gen.uidvalidity, &ctx->nuid ) != 2)) {
 #if 1
 		/* In a generic driver, resetting the UID validity would be the right thing.
@@ -677,6 +681,7 @@ maildir_scan( maildir_store_t *ctx, msglist_t *msglist )
 							ctx->db->err( ctx->db, ret, "Maildir error: db->get()" );
 						  mbork:
 							maildir_free_scan( msglist );
+							closedir( d );
 							goto bork;
 						}
 						uid = INT_MAX;
@@ -1025,8 +1030,10 @@ maildir_load( store_t *gctx, int minuid, int maxuid, int newuid, int *excs, int 
 	ctx->excs = nfrealloc( excs, nexcs * sizeof(int) );
 	ctx->nexcs = nexcs;
 
-	if (ctx->fresh)
+	if (ctx->fresh) {
+		ctx->gen.count = ctx->gen.recent = 0;
 		goto dontscan;
+	}
 
 	if (maildir_scan( ctx, &msglist ) != DRV_OK) {
 		cb( DRV_BOX_BAD, aux );
@@ -1051,7 +1058,6 @@ maildir_rescan( maildir_store_t *ctx )
 
 	if (maildir_scan( ctx, &msglist ) != DRV_OK)
 		return DRV_BOX_BAD;
-	ctx->gen.recent = 0;
 	for (msgapp = &ctx->gen.msgs, i = 0;
 	     (msg = (maildir_message_t *)*msgapp) || i < msglist.nents; )
 	{

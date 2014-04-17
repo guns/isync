@@ -135,7 +135,7 @@ convert( const char *box, int altmap )
 	key.data = (void *)"UIDVALIDITY";
 	key.size = 11;
 	if (altmap) {
-		if ((n = read( sfd, buf, sizeof(buf) )) <= 0 ||
+		if ((n = read( sfd, buf, sizeof(buf) - 1 )) <= 0 ||
 		    (buf[n] = 0, sscanf( buf, "%d\n%d", &uv[0], &uv[1] ) != 2))
 		{
 			fprintf( stderr, "Error: cannot read UIDVALIDITY of '%s'.\n", box );
@@ -208,8 +208,10 @@ convert( const char *box, int altmap )
 				nfsnprintf( buf2 + bl, sizeof(buf2) - bl, "%.*s,U=%d%s", ml, e->d_name, uid, ru );
 			}
 			if (rename( buf, buf2 )) {
-				if (errno == ENOENT)
+				if (errno == ENOENT) {
+					closedir( d );
 					goto again;
+				}
 				sys_error( "Cannot rename %s to %s", buf, buf2 );
 			  ebork:
 				closedir( d );
@@ -224,6 +226,7 @@ convert( const char *box, int altmap )
 	close( dfd );
 	if (rename( tdpath, dpath )) {
 		sys_error( "Cannot rename %s to %s", tdpath, dpath );
+		close( sfd );
 		return 1;
 	}
 	if (unlink( spath ))

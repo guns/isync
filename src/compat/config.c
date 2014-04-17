@@ -27,8 +27,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
-static int local_home, local_root;
+#include <ctype.h>
 
 static char *
 my_strndup( const char *s, size_t nchars )
@@ -120,16 +119,6 @@ load_config( const char *path, config_t ***stor )
 			cfg = **stor = nfmalloc( sizeof(config_t) );
 			*stor = &cfg->next;
 			memcpy( cfg, &global, sizeof(config_t) );
-			if (val[0] == '~' && val[1] == '/') {
-				val += 2;
-				local_home = 1;
-			} else if (!memcmp( val, Home, HomeLen ) && val[HomeLen] == '/') {
-				val += HomeLen + 1;
-				local_home = 1;
-			} else if (val[0] == '/')
-				local_root = 1;
-			else
-				local_home = 1;
 			/* not expanded at this point */
 			cfg->path = nfstrdup( val );
 		} else if (!strcasecmp( "OneToOne", cmd )) {
@@ -234,6 +223,21 @@ tb( int on )
 	return on ? "yes" : "no";
 }
 
+static const char *
+quotify( const char *str )
+{
+	char *ostr;
+	int i;
+
+	for (i = 0; str[i]; i++) {
+		if (isspace( str[i] )) {
+			nfasprintf( &ostr, "\"%s\"", str );
+			return ostr;
+		}
+	}
+	return str;
+}
+
 static void
 write_imap_server( FILE *fp, config_t *cfg )
 {
@@ -243,9 +247,11 @@ write_imap_server( FILE *fp, config_t *cfg )
 	char buf[128], ubuf[64];
 	static int tunnels;
 
+	/* The old server names determine the derived store names. They are kinda stupid,
+	 * but can't be changed, because store names are encoded in state file names. */
 	if (cfg->tunnel)
 		nfasprintf( (char **)&cfg->old_server_name, "tunnel%d", ++tunnels );
-	else if (cfg->host) {
+	else {
 		if (sscanf( cfg->host, "%d.%d.%d.%d", &a1, &a2, &a3, &a4 ) == 4)
 			hl = nfsnprintf( buf, sizeof(buf), "%s", cfg->host );
 		else {
@@ -262,18 +268,17 @@ write_imap_server( FILE *fp, config_t *cfg )
 		}
 		if (boxes) /* !o2o */
 			for (pbox = boxes; pbox != cfg; pbox = pbox->next)
-				if (!memcmp( pbox->server_name, buf, hl + 1 )) {
+				if (!memcmp( pbox->old_server_name, buf, hl + 1 )) {
 					nfasprintf( (char **)&cfg->old_server_name, "%s-%d", buf, ++pbox->old_servers );
 					goto gotsrv;
 				}
 		cfg->old_server_name = nfstrdup( buf );
 		cfg->old_servers = 1;
 	  gotsrv: ;
-	} else {
-		fprintf( stderr, "ERROR: Neither host nor tunnel specified for mailbox %s.\n", cfg->path );
-		exit( 1 );
 	}
 
+	/* The "new" server names determine the names of the accounts themselves.
+	 * They are optimized for descriptiveness, e.g. in password prompts. */
 	if (cfg->user)
 		nfsnprintf( ubuf, sizeof(ubuf), "%s@", cfg->user );
 	else
@@ -307,16 +312,16 @@ write_imap_server( FILE *fp, config_t *cfg )
 		fprintf( fp, "Port %d\n", cfg->port );
 	}
 	if (cfg->user)
-		fprintf( fp, "User \"%s\"\n", cfg->user );
+		fprintf( fp, "User %s\n", quotify( cfg->user ) );
 	if (cfg->pass)
-		fprintf( fp, "Pass \"%s\"\n", cfg->pass );
+		fprintf( fp, "Pass %s\n", quotify( cfg->pass ) );
 	fprintf( fp, "RequireCRAM %s\nRequireSSL %s\n"
 	             "UseSSLv2 %s\nUseSSLv3 %s\nUseTLSv1 %s\n",
 	             tb(cfg->require_cram), tb(cfg->require_ssl),
 	             tb(cfg->use_sslv2), tb(cfg->use_sslv3), tb(cfg->use_tlsv1) );
 	if ((cfg->use_imaps || cfg->use_sslv2 || cfg->use_sslv3 || cfg->use_tlsv1) &&
 	    cfg->cert_file)
-		fprintf( fp, "CertificateFile %s\n", cfg->cert_file );
+		fprintf( fp, "CertificateFile %s\n", quotify( cfg->cert_file ) );
 	fputc( '\n', fp );
 }
 
@@ -330,13 +335,13 @@ write_imap_store( FILE *fp, config_t *cfg )
 	fprintf( fp, "IMAPStore %s\nAccount %s\n",
 	         cfg->store_name, cfg->server_name );
 	if (*folder)
-		fprintf( fp, "Path \"%s\"\n", folder );
+		fprintf( fp, "Path %s\n", quotify( folder ) );
 	else
 		fprintf( fp, "UseNamespace %s\n", tb(cfg->use_namespace) );
 	if (inbox)
-		fprintf( fp, "MapInbox \"%s\"\n", inbox );
+		fprintf( fp, "MapInbox %s\n", quotify( inbox ) );
 	if (cfg->copy_deleted_to)
-		fprintf( fp, "Trash \"%s\"\n", cfg->copy_deleted_to );
+		fprintf( fp, "Trash %s\n", quotify( cfg->copy_deleted_to ) );
 	fputc( '\n', fp );
 }
 
@@ -347,9 +352,9 @@ write_channel_parm( FILE *fp, config_t *cfg )
 		fprintf( fp, "MaxSize %d\n", cfg->max_size );
 	if (cfg->max_messages)
 		fprintf( fp, "MaxMessages %d\n", cfg->max_messages );
-	if (!cfg->delete && !delete)
-		fputs( "Sync New ReNew Flags\n", fp );
-	if (cfg->expunge || expunge)
+	if (cfg->delete && !global.delete && !delete)
+		fputs( "Sync All\n", fp );
+	if (cfg->expunge && !global.expunge && !expunge)
 		fputs( "Expunge Both\n", fp );
 	fputc( '\n', fp );
 }
@@ -369,23 +374,32 @@ write_config( int fd )
 {
 	FILE *fp;
 	const char *cn, *scn;
+	char *path, *local_box, *local_store;
 	config_t *box, *sbox, *pbox;
+	int pl;
 
 	if (!(fp = fdopen( fd, "w" ))) {
 		perror( "fdopen" );
 		return;
 	}
 
-	fprintf( fp, "SyncState *\n\n" );
-	if (local_home || o2o)
-		fprintf( fp, "MaildirStore local\nPath \"%s/\"\nInbox \"%s/INBOX\"\nAltMap %s\n\n",
-		         maildir, maildir, tb( altmap > 0 ) );
-	if (local_root)
-		fprintf( fp, "MaildirStore local_root\nPath /\nAltMap %s\n\n", tb( altmap > 0 ) );
+	fputs( "SyncState *\n", fp );
+	if (!global.delete && !delete)
+		fputs( "Sync New ReNew Flags\n", fp );
+	if (global.expunge || expunge)
+		fputs( "Expunge Both\n", fp );
+	fputc( '\n', fp );
 	if (o2o) {
 		write_imap_server( fp, &global );
 		write_imap_store( fp, &global );
-		fprintf( fp, "Channel o2o\nMaster :%s:\nSlave :local:\nPattern %%\n", global.store_name );
+		fprintf( fp, "MaildirStore local\nPath %s/\n", quotify( maildir ) );
+		if (!inbox) { /* just in case listing actually produces an INBOX ... */
+			nfasprintf( (char **)&inbox, "%s/INBOX", maildir );
+			fprintf( fp, "Inbox %s\n", quotify( inbox ) );
+		}
+		if (altmap > 0)
+			fputs( "AltMap yes\n", fp );
+		fprintf( fp, "\nChannel o2o\nMaster :%s:\nSlave :local:\nPattern %%\n", global.store_name );
 		write_channel_parm( fp, &global );
 	} else {
 		for (box = boxes; box; box = box->next) {
@@ -428,6 +442,55 @@ write_config( int fd )
 		  gotsrv:
 			write_imap_store( fp, box );
 		  gotall:
+
+			path = expand_strdup( box->path );
+			if (!memcmp( path, Home, HomeLen ) && path[HomeLen] == '/')
+				nfasprintf( &path, "~%s", path + HomeLen );
+			local_store = local_box = strrchr( path, '/' ) + 1;
+			pl = local_store - path;
+			/* try to re-use existing store */
+			for (pbox = boxes; pbox != box; pbox = pbox->next)
+				if (pbox->local_store_path && !memcmp( pbox->local_store_path, path, pl ) && !pbox->local_store_path[pl])
+					goto gotstor;
+			box->local_store_path = my_strndup( path, pl );
+			/* derive a suitable name */
+			if (!strcmp( box->local_store_path, "/var/mail/" ) || !strcmp( box->local_store_path, "/var/spool/mail/" )) {
+				local_store = nfstrdup( "spool" );
+			} else if (!strcmp( box->local_store_path, "~/" )) {
+				local_store = nfstrdup( "home" );
+			} else {
+				local_store = memrchr( box->local_store_path, '/', pl - 1 );
+				if (local_store) {
+					local_store = my_strndup( local_store + 1, pl - 2 - (local_store - box->local_store_path) );
+					for (pl = 0; local_store[pl]; pl++)
+						local_store[pl] = tolower( local_store[pl] );
+				} else {
+					local_store = nfstrdup( "local" );
+				}
+			}
+			/* avoid name clashes with imap stores */
+			for (pbox = boxes; pbox != box; pbox = pbox->next)
+				if (!strcmp( pbox->store_name, local_store )) {
+					nfasprintf( &local_store, "local_%s", local_store );
+					goto gotsdup;
+				}
+		  gotsdup:
+			/* avoid name clashes with other local stores */
+			for (pbox = boxes; pbox != box; pbox = pbox->next)
+				if (pbox->local_store_name && !strcmp( pbox->local_store_name, local_store )) {
+					nfasprintf( (char **)&box->local_store_name, "%s-%d", local_store, ++pbox->local_stores );
+					goto gotdup;
+				}
+			box->local_store_name = local_store;
+			box->local_stores = 1;
+		  gotdup:
+			fprintf( fp, "MaildirStore %s\nPath %s\n", box->local_store_name, quotify( box->local_store_path ) );
+			if (altmap > 0)
+				fputs( "AltMap yes\n", fp );
+			fputc( '\n', fp );
+			pbox = box;
+		  gotstor:
+
 			if (box->alias)
 				cn = box->alias;
 			else {
@@ -455,12 +518,9 @@ write_config( int fd )
 			box->channels = 1;
 			box->channel_name = cn;
 		  gotchan:
-			if (box->path[0] == '/')
-				fprintf( fp, "Channel %s\nMaster :%s:\"%s\"\nSlave :local_root:\"%s\"\n",
-				         box->channel_name, box->store_name, box->box, box->path + 1 );
-			else
-				fprintf( fp, "Channel %s\nMaster :%s:\"%s\"\nSlave :local:\"%s\"\n",
-				         box->channel_name, box->store_name, box->box, box->path );
+
+			fprintf( fp, "Channel %s\nMaster :%s:%s\nSlave :%s:%s\n",
+			             box->channel_name, box->store_name, quotify( box->box ), pbox->local_store_name, quotify( local_box ) );
 			write_channel_parm( fp, box );
 		}
 				

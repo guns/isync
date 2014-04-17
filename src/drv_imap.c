@@ -993,11 +993,13 @@ parse_response_code( imap_store_t *ctx, struct imap_cmd *cmd, char *s )
 		return RESP_OK;		/* no response code */
 	s++;
 	if (!(p = strchr( s, ']' ))) {
+	  bad_resp:
 		error( "IMAP error: malformed response code\n" );
 		return RESP_CANCEL;
 	}
 	*p++ = 0;
-	arg = next_arg( &s );
+	if (!(arg = next_arg( &s )))
+		goto bad_resp;
 	if (!strcmp( "UIDVALIDITY", arg )) {
 		if (!(arg = next_arg( &s )) ||
 		    (ctx->gen.uidvalidity = strtoll( arg, &earg, 10 ), *earg))
@@ -1040,8 +1042,9 @@ parse_list_rsp( imap_store_t *ctx, list_t *list, char *cmd )
 	list_t *lp;
 
 	if (!is_list( list )) {
-		error( "IMAP error: malformed LIST response\n" );
 		free_list( list );
+	  bad_list:
+		error( "IMAP error: malformed LIST response\n" );
 		return LIST_BAD;
 	}
 	for (lp = list->child; lp; lp = lp->next)
@@ -1050,7 +1053,8 @@ parse_list_rsp( imap_store_t *ctx, list_t *list, char *cmd )
 			return LIST_OK;
 		}
 	free_list( list );
-	arg = next_arg( &cmd );
+	if (!(arg = next_arg( &cmd )))
+		goto bad_list;
 	if (!ctx->delimiter)
 		ctx->delimiter = nfstrdup( arg );
 	return parse_list( ctx, cmd, parse_list_rsp_p2 );

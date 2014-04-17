@@ -128,13 +128,21 @@ convert( config_t *box )
 		sys_error( "Cannot open %s", iuvname );
 		goto err2;
 	}
-	fscanf( fp, "%d", &uidval );
+	if (fscanf( fp, "%d", &uidval ) != 1) {
+		sys_error( "Cannot read %s", iuvname );
+	  err3:
+		fclose( fp );
+		goto err2;
+	}
 	fclose( fp );
 	if (!(fp = fopen( imuname, "r" ))) {
 		sys_error( "Cannot open %s", imuname );
 		goto err2;
 	}
-	fscanf( fp, "%d", &maxuid );
+	if (fscanf( fp, "%d", &maxuid ) != 1) {
+		sys_error( "Cannot read %s", imuname );
+		goto err3;
+	}
 	fclose( fp );
 
 	if (!stat( iumname, &sb )) {
@@ -232,7 +240,10 @@ convert( config_t *box )
 			goto err4;
 		}
 		db->close( db, 0 );
-		rename( iumname, diumname );
+		if (rename( iumname, diumname )) {
+			sys_error( "Cannot rename %s to %s", iumname, diumname );
+			goto err4;
+		}
 	} else {
 		if (!(fp = fopen( uvname, "w" ))) {
 			sys_error( "Cannot create %s", uvname );
