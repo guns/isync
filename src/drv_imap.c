@@ -45,6 +45,7 @@ typedef struct imap_server_conf {
 	char *pass_cmd;
 	int max_in_progress;
 #ifdef HAVE_LIBSSL
+	char use_ssl;
 	char require_ssl;
 	char require_cram;
 #endif
@@ -687,7 +688,8 @@ parse_imap_list( imap_store_t *ctx, char **sp, parse_list_state_t *sts )
 			if (*s != '}' || *++s)
 				goto bail;
 
-			s = cur->val = nfmalloc( cur->len );
+			s = cur->val = nfmalloc( cur->len + 1 );
+			s[cur->len] = 0;
 
 		  getbytes:
 			bytes -= socket_read( &ctx->conn, s, bytes );
@@ -1570,13 +1572,14 @@ imap_open_store_p2( imap_store_t *ctx, struct imap_cmd *cmd ATTR_UNUSED, int res
 static void
 imap_open_store_authenticate( imap_store_t *ctx )
 {
+#ifdef HAVE_LIBSSL
+	imap_store_conf_t *cfg = (imap_store_conf_t *)ctx->gen.conf;
+	imap_server_conf_t *srvc = cfg->server;
+#endif
+
 	if (ctx->greeting != GreetingPreauth) {
 #ifdef HAVE_LIBSSL
-		imap_store_conf_t *cfg = (imap_store_conf_t *)ctx->gen.conf;
-		imap_server_conf_t *srvc = cfg->server;
-
-		if (!srvc->sconf.use_imaps &&
-		    (srvc->sconf.use_sslv2 || srvc->sconf.use_sslv3 || srvc->sconf.use_tlsv1)) {
+		if (!srvc->sconf.use_imaps && srvc->use_ssl) {
 			/* always try to select SSL support if available */
 			if (CAP(STARTTLS)) {
 				imap_exec( ctx, 0, imap_open_store_authenticate_p2, "STARTTLS" );
@@ -1594,6 +1597,13 @@ imap_open_store_authenticate( imap_store_t *ctx )
 #endif
 		imap_open_store_authenticate2( ctx );
 	} else {
+#ifdef HAVE_LIBSSL
+		if (!srvc->sconf.use_imaps && srvc->require_ssl) {
+			error( "IMAP error: SSL support not available\n" );
+			imap_open_store_bail( ctx );
+			return;
+		}
+#endif
 		imap_open_store_namespace( ctx );
 	}
 }
@@ -2219,6 +2229,7 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep )
 {
 	imap_store_conf_t *store;
 	imap_server_conf_t *server, *srv, sserver;
+	const char *type, *name;
 	int acc_opt = 0;
 
 	if (!strcasecmp( "IMAPAccount", cfg->cmd )) {
@@ -2334,23 +2345,31 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep )
 		}
 		acc_opt = 1;
 	}
+	if (store)
+		type = "IMAP store", name = store->gen.name;
+	else
+		type = "IMAP account", name = server->name;
 	if (!store || !store->server) {
 		if (!server->sconf.tunnel && !server->sconf.host) {
-			if (store)
-				error( "IMAP store '%s' has incomplete/missing connection details\n", store->gen.name );
-			else
-				error( "IMAP account '%s' has incomplete/missing connection details\n", server->name );
+			error( "%s '%s' has neither Tunnel nor Host\n", type, name );
 			cfg->err = 1;
 			return 1;
 		}
 		if (server->pass && server->pass_cmd) {
-			if (store)
-				error( "IMAP store '%s' has both Pass and PassCmd\n", store->gen.name );
-			else
-				error( "IMAP account '%s' has both Pass and PassCmd\n", server->name );
+			error( "%s '%s' has both Pass and PassCmd\n", type, name );
 			cfg->err = 1;
 			return 1;
 		}
+#ifdef HAVE_LIBSSL
+		server->use_ssl =
+		        server->sconf.use_sslv2 | server->sconf.use_sslv3 |
+		        server->sconf.use_tlsv1 | server->sconf.use_tlsv11 | server->sconf.use_tlsv12;
+		if (server->require_ssl && !server->use_ssl) {
+			error( "%s '%s' requires SSL but no SSL versions enabled\n", type, name );
+			cfg->err = 1;
+			return 1;
+		}
+#endif
 	}
 	if (store) {
 		if (!store->server) {
@@ -2358,7 +2377,7 @@ imap_parse_store( conffile_t *cfg, store_conf_t **storep )
 			memcpy( store->server, &sserver, sizeof(sserver) );
 			store->server->name = store->gen.name;
 		} else if (acc_opt) {
-			error( "IMAP store '%s' has both Account and account-specific options\n", store->gen.name );
+			error( "%s '%s' has both Account and account-specific options\n", type, name );
 			cfg->err = 1;
 		}
 	}
