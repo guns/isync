@@ -49,12 +49,7 @@ LOG_PL = \
 
 $(srcdir)/ChangeLog: log
 log:
-	echo CHANGELOG generation disabled
-# log:
-# 	@test -z "$(srcdir)" || cd $(srcdir) && \
-# 	 ( ! test -d .git || \
-# 	   git log --date=iso --log-size --name-only | \
-# 	     perl -e '$(LOG_PL)' > ChangeLog )
+	echo "ChangeLog generation disabled" > ChangeLog
 
 deb: deb-clean
 	CFLAGS= fakeroot debian/rules binary
