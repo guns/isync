@@ -1,10 +1,10 @@
 # Maintainer: Sung Pae <self@sungpae.com>
 pkgname=isync
-pkgver=1_1_0.35.g64a6596
+pkgver=
 pkgrel=1
 pkgdesc="Sung Pae's isync/mbsync build"
 arch=('x86_64')
-url="https://github.com/guns/rxvt-unicode"
+url="https://github.com/guns/isync"
 license=('GPL')
 groups=('guns')
 depends=('openssl')
