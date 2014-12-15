@@ -1,16 +1,17 @@
 # Maintainer: Sung Pae <self@sungpae.com>
-pkgname=isync
+pkgname=isync-nerv
 pkgver=
 pkgrel=1
-pkgdesc="Sung Pae's isync/mbsync build"
+pkgdesc="Custom isync/mbsync build"
 arch=('x86_64')
 url="https://github.com/guns/isync"
 license=('GPL')
-groups=('guns')
+groups=('nerv')
 depends=('openssl')
 makedepends=('git')
 provides=('isync' 'mbsync')
 conflicts=('isync' 'mbsync')
+replaces=('isync')
 
 pkgver() {
     printf %s "$(git describe --long --tags | tr - .)" | sed 's/^isync_//'
