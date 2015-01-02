@@ -58,8 +58,6 @@ socket_fail( conn_t *conn )
 }
 
 #ifdef HAVE_LIBSSL
-static int ssl_data_idx;
-
 static int
 ssl_return( const char *func, conn_t *conn, int ret )
 {
@@ -156,10 +154,10 @@ verify_hostname( X509 *cert, const char *hostname )
 static int
 verify_cert_host( const server_conf_t *conf, conn_t *sock )
 {
+	unsigned i;
+	long err;
 	X509 *cert;
-
-	if (!conf->host || sock->force_trusted > 0)
-		return 0;
+	STACK_OF(X509_OBJECT) *trusted;
 
 	cert = SSL_get_peer_certificate( sock->ssl );
 	if (!cert) {
@@ -167,31 +165,24 @@ verify_cert_host( const server_conf_t *conf, conn_t *sock )
 		return -1;
 	}
 
-	return verify_hostname( cert, conf->host );
-}
-
-static int
-ssl_verify_callback( int ok, X509_STORE_CTX *ctx )
-{
-	SSL *ssl = X509_STORE_CTX_get_ex_data( ctx, SSL_get_ex_data_X509_STORE_CTX_idx() );
-	conn_t *conn = SSL_get_ex_data( ssl, ssl_data_idx );
-
-	if (!conn->force_trusted) {
-		X509 *cert = sk_X509_value( ctx->chain, 0 );
-		STACK_OF(X509_OBJECT) *trusted = ctx->ctx->objs;
-		unsigned i;
-
-		conn->force_trusted = -1;
-		for (i = 0; i < conn->conf->num_trusted; i++) {
-			if (!X509_cmp( cert, sk_X509_OBJECT_value( trusted, i )->data.x509 )) {
-				conn->force_trusted = 1;
-				break;
-			}
-		}
+	trusted = SSL_CTX_get_cert_store( conf->SSLContext )->objs;
+	for (i = 0; i < conf->num_trusted; i++) {
+		if (!X509_cmp( cert, sk_X509_OBJECT_value( trusted, i )->data.x509 ))
+			return 0;
 	}
-	if (conn->force_trusted > 0)
-		ok = 1;
-	return ok;
+
+	err = SSL_get_verify_result( sock->ssl );
+	if (err != X509_V_OK) {
+		error( "SSL error connecting %s: %s\n", sock->name, ERR_error_string( err, NULL ) );
+		return -1;
+	}
+
+	if (!conf->host) {
+		error( "SSL error connecting %s: Neither host nor matching certificate specified\n", sock->name );
+		return -1;
+	}
+
+	return verify_hostname( cert, conf->host );
 }
 
 static int
@@ -205,18 +196,18 @@ init_ssl_ctx( const server_conf_t *conf )
 
 	mconf->SSLContext = SSL_CTX_new( SSLv23_client_method() );
 
-	if (!conf->use_sslv2)
+	if (!(conf->ssl_versions & SSLv2))
 		options |= SSL_OP_NO_SSLv2;
-	if (!conf->use_sslv3)
+	if (!(conf->ssl_versions & SSLv3))
 		options |= SSL_OP_NO_SSLv3;
-	if (!conf->use_tlsv1)
+	if (!(conf->ssl_versions & TLSv1))
 		options |= SSL_OP_NO_TLSv1;
 #ifdef SSL_OP_NO_TLSv1_1
-	if (!conf->use_tlsv11)
+	if (!(conf->ssl_versions & TLSv1_1))
 		options |= SSL_OP_NO_TLSv1_1;
 #endif
 #ifdef SSL_OP_NO_TLSv1_2
-	if (!conf->use_tlsv12)
+	if (!(conf->ssl_versions & TLSv1_2))
 		options |= SSL_OP_NO_TLSv1_2;
 #endif
 
@@ -228,11 +219,11 @@ init_ssl_ctx( const server_conf_t *conf )
 		return 0;
 	}
 	mconf->num_trusted = sk_X509_OBJECT_num( SSL_CTX_get_cert_store( mconf->SSLContext )->objs );
-	if (!SSL_CTX_set_default_verify_paths( mconf->SSLContext ))
+	if (mconf->system_certs && !SSL_CTX_set_default_verify_paths( mconf->SSLContext ))
 		warn( "Warning: Unable to load default certificate files: %s\n",
 		      ERR_error_string( ERR_get_error(), 0 ) );
 
-	SSL_CTX_set_verify( mconf->SSLContext, SSL_VERIFY_PEER, ssl_verify_callback );
+	SSL_CTX_set_verify( mconf->SSLContext, SSL_VERIFY_NONE, NULL );
 
 	mconf->ssl_ctx_valid = 1;
 	return 1;
@@ -251,7 +242,6 @@ socket_start_tls( conn_t *conn, void (*cb)( int ok, void *aux ) )
 	if (!ssl_inited) {
 		SSL_library_init();
 		SSL_load_error_strings();
-		ssl_data_idx = SSL_get_ex_new_index( 0, NULL, NULL, NULL, NULL );
 		ssl_inited = 1;
 	}
 
@@ -263,7 +253,6 @@ socket_start_tls( conn_t *conn, void (*cb)( int ok, void *aux ) )
 	conn->ssl = SSL_new( ((server_conf_t *)conn->conf)->SSLContext );
 	SSL_set_fd( conn->ssl, conn->fd );
 	SSL_set_mode( conn->ssl, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER );
-	SSL_set_ex_data( conn->ssl, ssl_data_idx, conn );
 	conn->state = SCK_STARTTLS;
 	start_tls_p2( conn );
 }
@@ -272,7 +261,6 @@ static void
 start_tls_p2( conn_t *conn )
 {
 	if (ssl_return( "connect to", conn, SSL_connect( conn->ssl ) ) > 0) {
-		/* verify whether the server hostname matches the certificate */
 		if (verify_cert_host( conn->conf, conn )) {
 			start_tls_p3( conn, 0 );
 		} else {
@@ -312,7 +300,7 @@ socket_connect( conn_t *sock, void (*cb)( int ok, void *aux ) )
 
 	sock->callbacks.connect = cb;
 
-	/* open connection to IMAP server */
+	/* open connection to server */
 	if (conf->tunnel) {
 		int a[2];
 
@@ -352,7 +340,7 @@ socket_connect( conn_t *sock, void (*cb)( int ok, void *aux ) )
 		hints.ai_flags = AI_ADDRCONFIG;
 		infon( "Resolving %s... ", conf->host );
 		if ((gaierr = getaddrinfo( conf->host, NULL, &hints, &sock->addrs ))) {
-			error( "IMAP error: Cannot resolve server '%s': %s\n", conf->host, gai_strerror( gaierr ) );
+			error( "Error: Cannot resolve server '%s': %s\n", conf->host, gai_strerror( gaierr ) );
 			socket_connect_bail( sock );
 			return;
 		}
@@ -365,7 +353,7 @@ socket_connect( conn_t *sock, void (*cb)( int ok, void *aux ) )
 		infon( "Resolving %s... ", conf->host );
 		he = gethostbyname( conf->host );
 		if (!he) {
-			error( "IMAP error: Cannot resolve server '%s': %s\n", conf->host, hstrerror( h_errno ) );
+			error( "Error: Cannot resolve server '%s': %s\n", conf->host, hstrerror( h_errno ) );
 			socket_connect_bail( sock );
 			return;
 		}
@@ -381,7 +369,6 @@ static void
 socket_connect_one( conn_t *sock )
 {
 	int s;
-	ushort port;
 #ifdef HAVE_IPV6
 	struct addrinfo *ai;
 #else
@@ -400,18 +387,13 @@ socket_connect_one( conn_t *sock )
 		return;
 	}
 
-	port = sock->conf->port ? sock->conf->port :
-#ifdef HAVE_LIBSSL
-	       sock->conf->use_imaps ? 993 :
-#endif
-	       143;
 #ifdef HAVE_IPV6
 	if (ai->ai_family == AF_INET6) {
 		struct sockaddr_in6 *in6 = ((struct sockaddr_in6 *)ai->ai_addr);
 		char sockname[64];
-		in6->sin6_port = htons( port );
+		in6->sin6_port = htons( sock->conf->port );
 		nfasprintf( &sock->name, "%s ([%s]:%hu)",
-		            sock->conf->host, inet_ntop( AF_INET6, &in6->sin6_addr, sockname, sizeof(sockname) ), port );
+		            sock->conf->host, inet_ntop( AF_INET6, &in6->sin6_addr, sockname, sizeof(sockname) ), sock->conf->port );
 	} else
 #endif
 	{
@@ -421,9 +403,9 @@ socket_connect_one( conn_t *sock )
 		in->sin_family = AF_INET;
 		in->sin_addr.s_addr = *((int *)*sock->curr_addr);
 #endif
-		in->sin_port = htons( port );
+		in->sin_port = htons( sock->conf->port );
 		nfasprintf( &sock->name, "%s (%s:%hu)",
-		            sock->conf->host, inet_ntoa( in->sin_addr ), port );
+		            sock->conf->host, inet_ntoa( in->sin_addr ), sock->conf->port );
 	}
 
 #ifdef HAVE_IPV6
@@ -735,58 +717,3 @@ socket_fd_cb( int events, void *aux )
 	if (events & POLLIN)
 		socket_fill( conn );
 }
-
-#ifdef HAVE_LIBSSL
-/* this isn't strictly socket code, but let's have all OpenSSL use in one file. */
-
-#define ENCODED_SIZE(n) (4*((n+2)/3))
-
-static char
-hexchar( unsigned int b )
-{
-	if (b < 10)
-		return '0' + b;
-	return 'a' + (b - 10);
-}
-
-void
-cram( const char *challenge, const char *user, const char *pass, char **_final, int *_finallen )
-{
-	char *response, *final;
-	unsigned hashlen;
-	int i, clen, blen, flen, olen;
-	unsigned char hash[16];
-	char buf[256], hex[33];
-	HMAC_CTX hmac;
-
-	HMAC_Init( &hmac, (unsigned char *)pass, strlen( pass ), EVP_md5() );
-
-	clen = strlen( challenge );
-	/* response will always be smaller than challenge because we are decoding. */
-	response = nfcalloc( 1 + clen );
-	EVP_DecodeBlock( (unsigned char *)response, (unsigned char *)challenge, clen );
-	HMAC_Update( &hmac, (unsigned char *)response, strlen( response ) );
-	free( response );
-
-	hashlen = sizeof(hash);
-	HMAC_Final( &hmac, hash, &hashlen );
-	assert( hashlen == sizeof(hash) );
-
-	hex[32] = 0;
-	for (i = 0; i < 16; i++) {
-		hex[2 * i] = hexchar( (hash[i] >> 4) & 0xf );
-		hex[2 * i + 1] = hexchar( hash[i] & 0xf );
-	}
-
-	blen = nfsnprintf( buf, sizeof(buf), "%s %s", user, hex );
-
-	flen = ENCODED_SIZE( blen );
-	final = nfmalloc( flen + 1 );
-	final[flen] = 0;
-	olen = EVP_EncodeBlock( (unsigned char *)final, (unsigned char *)buf, blen );
-	assert( olen == flen );
-
-	*_final = final;
-	*_finallen = flen;
-}
-#endif

@@ -133,7 +133,7 @@ but is not considered part of them; this is important for \fBPatterns\fR
 in the Channels section.
 Note that you \fBmust\fR append a slash if you want to specify an entire
 directory.
-(Default: \fI""\fR)
+(Default: none)
 ..
 .TP
 \fBMaxSize\fR \fIsize\fR[\fBk\fR|\fBm\fR][\fBb\fR]
@@ -229,6 +229,13 @@ The location of the \fBINBOX\fR. This is \fInot\fR relative to \fBPath\fR,
 but it is allowed to place the \fBINBOX\fR inside the \fBPath\fR.
 (Default: \fI~/Maildir\fR)
 ..
+.TP
+\fBInfoDelimiter\fR \fIdelim\fR
+The character used to delimit the info field from a message's basename.
+The Maildir standard defines this to be the colon, but this is incompatible
+with DOS/Windows file systems.
+(Default: the value of \fBFieldDelimiter\fR)
+..
 .SS IMAP4 Accounts
 .TP
 \fBIMAPAccount\fR \fIname\fR
@@ -238,8 +245,9 @@ Define the IMAP4 Account \fIname\fR, opening a section for its parameters.
 \fBHost\fR \fIhost\fR
 Specify the DNS name or IP address of the IMAP server.
 .br
-If \fBTunnel\fR is used, this setting is used only for SSL host certificate
-verification, if provided.
+If \fBTunnel\fR is used, this setting is needed only if \fBSSLType\fR is
+not \fINone\fR and \fBCertificateFile\fR is not used,
+in which case the host name is used for certificate subject verification.
 ..
 .TP
 \fBPort\fR \fIport\fR
@@ -271,30 +279,44 @@ optional.
 Specify a command to run to establish a connection rather than opening a TCP
 socket.  This allows you to run an IMAP session over an SSH tunnel, for
 example.
+..
+.TP
+\fBAuthMechs\fR \fItype\fR ...
+The list of acceptable authentication mechanisms.
+In addition to the mechanisms listed in the SASL registry (link below),
+the legacy IMAP \fBLOGIN\fR mechanism is known.
+The wildcard \fB*\fR represents all mechanisms that are deemed secure
+enough for the current \fBSSLType\fR setting.
+The actually used mechanism is the most secure choice from the intersection
+of this list, the list supplied by the server, and the installed SASL modules.
+(Default: \fB*\fR)
+..
+.TP
+\fBSSLType\fR {\fINone\fR|\fISTARTTLS\fR|\fIIMAPS\fR}
+Select the connection security/encryption method:
 .br
-If \fBUseIMAPS\fR is disabled and the tunnel opens a preauthenticated
-connection, \fBRequireSSL\fR also needs to be disabled.
-If the connection is not preauthenticated, but the tunnel is secure,
-disabling \fBRequireSSL\fR and \fBUseTLSv1\fR is recommended.
-..
-.TP
-\fBRequireCRAM\fR \fIyes\fR|\fIno\fR
-If set to \fIyes\fR, \fBmbsync\fR will abort the connection if no CRAM-MD5
-authentication is possible.  (Default: \fIno\fR)
-..
-.TP
-\fBUseIMAPS\fR \fIyes\fR|\fIno\fR
-If set to \fIyes\fR, the default for \fBPort\fR is changed to 993 and
-\fBmbsync\fR will start SSL negotiation immediately after establishing
-the connection to the server.
+\fINone\fR - no security.
+This is the default when \fBTunnel\fR is set, as tunnels are usually secure.
 .br
-Note that modern servers support SSL on the regular IMAP port 143 via the
-STARTTLS extension, which will be used automatically by default.
+\fISTARTTLS\fR - security is established via the STARTTLS extension
+after connecting the regular IMAP port 143. Most servers support this,
+so it is the default (unless a tunnel is used).
+.br
+\fIIMAPS\fR - security is established by starting SSL/TLS negotiation
+right after connecting the secure IMAP port 993.
 ..
 .TP
-\fBRequireSSL\fR \fIyes\fR|\fIno\fR
-\fBmbsync\fR will abort the connection if a TLS/SSL session cannot be
-established with the IMAP server.  (Default: \fIyes\fR)
+\fBSSLVersions\fR [\fISSLv2\fR] [\fISSLv3\fR] [\fITLSv1\fR] [\fITLSv1.1\fR] [\fITLSv1.2\fR]
+Select the acceptable SSL/TLS versions.
+Use of SSLv2 is strongly discouraged for security reasons, but might be the
+only option on some very old servers.
+Generally, the newest TLS version is recommended, but as this confuses some
+servers, \fBTLSv1\fR is the default.
+..
+.TP
+\fBSystemCertificates\fR \fIyes\fR|\fIno\fR
+Whether the system's default root cerificate store should be loaded.
+(Default: \fIyes\fR)
 ..
 .TP
 \fBCertificateFile\fR \fIpath\fR
@@ -302,35 +324,9 @@ File containing additional X.509 certificates used to verify server
 identities. Directly matched peer certificates are always trusted,
 regardless of validity.
 .br
-Note that the system's default certificate store is always used and should
-not be specified here.
-..
-.TP
-\fBUseSSLv2\fR \fIyes\fR|\fIno\fR
-Use SSLv2 for communication with the IMAP server over SSL?
-.br
-Note that this option is deprecated for security reasons.
-(Default: \fIno\fR)
-..
-.TP
-\fBUseSSLv3\fR \fIyes\fR|\fIno\fR
-Use SSLv3 for communication with the IMAP server over SSL?
-(Default: \fIno\fR)
-..
-.TP
-\fBUseTLSv1\fR \fIyes\fR|\fIno\fR
-Use TLSv1 for communication with the IMAP server over SSL?
-(Default: \fIyes\fR)
-..
-.TP
-\fBUseTLSv1.1\fR \fIyes\fR|\fIno\fR
-Use TLSv1.1 for communication with the IMAP server over SSL?
-(Default: \fIno\fR)
-..
-.TP
-\fBUseTLSv1.2\fR \fIyes\fR|\fIno\fR
-Use TLSv1.2 for communication with the IMAP server over SSL?
-(Default: \fIno\fR)
+Note that the system's default certificate store is always used
+(unless \fBSystemCertificates\fR is disabled)
+and should not be specified here.
 ..
 .TP
 \fBPipelineDepth\fR \fIdepth\fR
@@ -432,43 +428,43 @@ case you need to enable this option.
 \fBSync\fR {\fINone\fR|[\fIPull\fR] [\fIPush\fR] [\fINew\fR] [\fIReNew\fR] [\fIDelete\fR] [\fIFlags\fR]|\fIAll\fR}
 Select the synchronization operation(s) to perform:
 .br
-\fBPull\fR - propagate changes from Master to Slave.
+\fIPull\fR - propagate changes from Master to Slave.
 .br
-\fBPush\fR - propagate changes from Slave to Master.
+\fIPush\fR - propagate changes from Slave to Master.
 .br
-\fBNew\fR - propagate newly appeared messages.
+\fINew\fR - propagate newly appeared messages.
 .br
-\fBReNew\fR - previously refused messages are re-evaluated for propagation.
+\fIReNew\fR - previously refused messages are re-evaluated for propagation.
 Useful after flagging affected messages in the source Store or enlarging
 MaxSize in the destination Store.
 .br
-\fBDelete\fR - propagate message deletions. This applies only to messages that
+\fIDelete\fR - propagate message deletions. This applies only to messages that
 are actually gone, i.e., were expunged. The affected messages in the remote
 Store are marked as deleted only, i.e., they won't be really deleted until
 that Store is expunged.
 .br
-\fBFlags\fR - propagate flag changes. Note that Deleted/Trashed is a flag as
+\fIFlags\fR - propagate flag changes. Note that Deleted/Trashed is a flag as
 well; this is particularly interesting if you use \fBmutt\fR with the
 maildir_trash option.
 .br
-\fBAll\fR (\fB--full\fR on the command line) - all of the above.
+\fIAll\fR (\fB--full\fR on the command line) - all of the above.
 This is the global default.
 .br
-\fBNone\fR (\fB--noop\fR on the command line) - don't propagate anything.
+\fINone\fR (\fB--noop\fR on the command line) - don't propagate anything.
 Useful if you want to expunge only.
 .IP
-\fBPull\fR and \fBPush\fR are direction flags, while \fBNew\fR, \fBReNew\fR,
-\fBDelete\fR and \fBFlags\fR are type flags. The two flag classes make up a
+\fIPull\fR and \fIPush\fR are direction flags, while \fINew\fR, \fIReNew\fR,
+\fIDelete\fR and \fIFlags\fR are type flags. The two flag classes make up a
 two-dimensional matrix (a table). Its cells are the individual actions to
 perform. There are two styles of asserting the cells:
 .br
 In the first style, the flags select entire rows/colums in the matrix. Only
 the cells which are selected both horizontally and vertically are asserted.
 Specifying no flags from a class is like specifying all flags from this class.
-For example, "\fBSync\fR\ \fBPull\fR\ \fBNew\fR\ \fBFlags\fR" will propagate
+For example, "\fBSync\fR\ \fIPull\fR\ \fINew\fR\ \fIFlags\fR" will propagate
 new messages and flag changes from the Master to the Slave,
-"\fBSync\fR\ \fBNew\fR\ \fBDelete\fR" will propagate message arrivals and
-deletions both ways, and "\fBSync\fR\ \fBPush\fR" will propagate all changes
+"\fBSync\fR\ \fINew\fR\ \fIDelete\fR" will propagate message arrivals and
+deletions both ways, and "\fBSync\fR\ \fIPush\fR" will propagate all changes
 from the Slave to the Master.
 .br
 In the second style, direction flags are concatenated with type flags; every
@@ -476,12 +472,12 @@ compound flag immediately asserts a cell in the matrix. In addition to at least
 one compound flag, the individual flags can be used as well, but as opposed to
 the first style, they immediately assert all cells in their respective
 row/column. For example,
-"\fBSync\fR\ \fBPullNew\fR\ \fBPullDelete\fR\ \fBPush\fR" will propagate
+"\fBSync\fR\ \fIPullNew\fR\ \fIPullDelete\fR\ \fIPush\fR" will propagate
 message arrivals and deletions from the Master to the Slave and any changes
 from the Slave to the Master.
 Note that it is not allowed to assert a cell in two ways, e.g.
-"\fBSync\fR\ \fBPullNew\fR\ \fBPull\fR" and
-"\fBSync\fR\ \fBPullNew\fR\ \fBDelete\fR\ \fBPush\fR" induce error messages.
+"\fBSync\fR\ \fIPullNew\fR\ \fIPull\fR" and
+"\fBSync\fR\ \fIPullNew\fR\ \fIDelete\fR\ \fIPush\fR" induce error messages.
 ..
 .TP
 \fBCreate\fR {\fINone\fR|\fIMaster\fR|\fISlave\fR|\fIBoth\fR}
@@ -524,7 +520,8 @@ mailbox name to make up a complete path.
 .br
 This option can be used outside any section for a global effect. In this case
 the appended string is made up according to the pattern
-\fB:\fImaster\fB:\fImaster-box\fB_:\fIslave\fB:\fIslave-box\fR.
+\fB:\fImaster\fB:\fImaster-box\fB_:\fIslave\fB:\fIslave-box\fR
+(see also \fBFieldDelimiter\fR below).
 .br
 (Global default: \fI~/.mbsync/\fR).
 ..
@@ -559,6 +556,16 @@ Enabling it is a wise choice for file systems mounted with data=writeback,
 in particular modern systems like ext4, btrfs and xfs. The performance impact
 on older file systems may be disproportionate.
 (Default: \fIyes\fR)
+..
+.TP
+\fBFieldDelimiter\fR \fIdelim\fR
+The character to use to delimit fields in the string appended to a global
+\fBSyncState\fR.
+\fBmbsync\fR prefers to use the colon, but this is incompatible with
+DOS/Windows file systems.
+This option is meaningless for \fBSyncState\fR if the latter is \fB*\fR,
+obviously. However, it also determines the default of \fBInfoDelimiter\fR.
+(Global default: \fI;\fR on Windows, \fI:\fR everywhere else)
 ..
 .SH RECOMMENDATIONS
 Make sure your IMAP server does not auto-expunge deleted messages - it is
@@ -611,6 +618,9 @@ Directory containing synchronization state files
 mdconvert(1), isync(1), mutt(1), maildir(5)
 .P
 Up to date information on \fBmbsync\fR can be found at http://isync.sf.net/
+.P
+SASL mechanisms are listed at
+http://www.iana.org/assignments/sasl-mechanisms/sasl-mechanisms.xhtml
 ..
 .SH AUTHORS
 Originally written by Michael R. Elkins,

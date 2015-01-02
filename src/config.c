@@ -36,10 +36,7 @@
 
 store_conf_t *stores;
 
-#define ARG_OPTIONAL 0
-#define ARG_REQUIRED 1
-
-static char *
+char *
 get_arg( conffile_t *cfile, int required, int *comment )
 {
 	char *ret, *p, *t;
@@ -354,8 +351,6 @@ load_config( const char *where, int pseudo )
 		for (i = 0; i < N_DRIVERS; i++)
 			if (drivers[i]->parse_store( &cfile, &store )) {
 				if (store) {
-					if (!store->path)
-						store->path = "";
 					if (!store->max_size)
 						store->max_size = INT_MAX;
 					*storeapp = store;
@@ -471,6 +466,19 @@ load_config( const char *where, int pseudo )
 		else if (!strcasecmp( "FSync", cfile.cmd ))
 		{
 			UseFSync = parse_bool( &cfile );
+		}
+		else if (!strcasecmp( "FieldDelimiter", cfile.cmd ))
+		{
+			if (strlen( cfile.val ) != 1) {
+				error( "%s:%d: Field delimiter must be exactly one character long\n", cfile.file, cfile.line );
+				cfile.err = 1;
+			} else {
+				FieldDelimiter = cfile.val[0];
+				if (!ispunct( FieldDelimiter )) {
+					error( "%s:%d: Field delimiter must be a punctuation character\n", cfile.file, cfile.line );
+					cfile.err = 1;
+				}
+			}
 		}
 		else if (!getopt_helper( &cfile, &gcops, &global_conf ))
 		{

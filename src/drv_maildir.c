@@ -57,6 +57,8 @@ typedef struct maildir_store_conf {
 #ifdef USE_DB
 	int alt_map;
 #endif /* USE_DB */
+	char info_delimiter;
+	char *info_prefix, *info_stop; /* precalculated from info_delimiter */
 } maildir_store_conf_t;
 
 typedef struct maildir_message {
@@ -84,14 +86,14 @@ static int MaildirCount;
 static const char Flags[] = { 'D', 'F', 'R', 'S', 'T' };
 
 static unsigned char
-maildir_parse_flags( const char *base )
+maildir_parse_flags( const char *info_prefix, const char *base )
 {
 	const char *s;
 	unsigned i;
 	unsigned char flags;
 
 	flags = 0;
-	if ((s = strstr( base, ":2," )))
+	if ((s = strstr( base, info_prefix )))
 		for (s += 3, i = 0; i < as(Flags); i++)
 			if (strchr( s, Flags[i] ))
 				flags |= (1 << i);
@@ -121,23 +123,39 @@ maildir_join_path( const char *prefix, const char *box )
 	return out;
 }
 
+static int
+maildir_validate_path( const store_conf_t *conf )
+{
+	struct stat st;
+
+	if (!conf->path) {
+		error( "Maildir error: store '%s' has no Path\n", conf->name );
+		return -1;
+	}
+	if (stat( conf->path, &st ) || !S_ISDIR(st.st_mode)) {
+		error( "Maildir error: cannot open store '%s'\n", conf->path );
+		return -1;
+	}
+	return 0;
+}
+
 static void
 maildir_open_store( store_conf_t *conf, const char *label ATTR_UNUSED,
                     void (*cb)( store_t *ctx, void *aux ), void *aux )
 {
 	maildir_store_t *ctx;
-	struct stat st;
 
-	if (stat( conf->path, &st ) || !S_ISDIR(st.st_mode)) {
-		error( "Maildir error: cannot open store '%s'\n", conf->path );
-		cb( 0, aux );
-		return;
-	}
 	ctx = nfcalloc( sizeof(*ctx) );
 	ctx->gen.conf = conf;
 	ctx->uvfd = -1;
-	if (conf->trash)
+	if (conf->trash) {
+		if (maildir_validate_path( conf ) < 0) {
+			free( ctx );
+			cb( 0, aux );
+			return;
+		}
 		ctx->trash = maildir_join_path( conf->path, conf->trash );
+	}
 	cb( &ctx->gen, aux );
 }
 
@@ -192,7 +210,7 @@ maildir_invoke_bad_callback( store_t *ctx )
 static int maildir_list_inbox( store_t *gctx, int *flags );
 
 static int
-maildir_list_recurse( store_t *gctx, int isBox, int *flags, const char *inbox,
+maildir_list_recurse( store_t *gctx, int isBox, int *flags, const char *inbox, int inboxLen,
                       char *path, int pathLen, char *name, int nameLen )
 {
 	DIR *dir;
@@ -218,7 +236,7 @@ maildir_list_recurse( store_t *gctx, int isBox, int *flags, const char *inbox,
 	while ((de = readdir( dir ))) {
 		const char *ent = de->d_name;
 		pl = pathLen + nfsnprintf( path + pathLen, _POSIX_PATH_MAX - pathLen, "%s", ent );
-		if (inbox && !memcmp( path, inbox, pl ) && !inbox[pl]) {
+		if (inbox && equals( path, pl, inbox, inboxLen )) {
 			if (maildir_list_inbox( gctx, flags ) < 0) {
 				closedir( dir );
 				return -1;
@@ -233,14 +251,14 @@ maildir_list_recurse( store_t *gctx, int isBox, int *flags, const char *inbox,
 			} else {
 				if (isBox)
 					continue;
-				if (!memcmp( ent, "INBOX", 6 )) {
+				if (!nameLen && equals( ent, -1, "INBOX", 5 )) {
 					path[pathLen] = 0;
 					warn( "Maildir warning: ignoring INBOX in %s\n", path );
 					continue;
 				}
 			}
 			nl = nameLen + nfsnprintf( name + nameLen, _POSIX_PATH_MAX - nameLen, "%s", ent );
-			if (maildir_list_recurse( gctx, 1, flags, inbox, path, pl, name, nl ) < 0) {
+			if (maildir_list_recurse( gctx, 1, flags, inbox, inboxLen, path, pl, name, nl ) < 0) {
 				closedir( dir );
 				return -1;
 			}
@@ -257,7 +275,7 @@ maildir_list_inbox( store_t *gctx, int *flags )
 
 	*flags &= ~LIST_INBOX;
 	return maildir_list_recurse(
-	        gctx, 2, flags, 0,
+	        gctx, 2, flags, 0, 0,
 	        path, nfsnprintf( path, _POSIX_PATH_MAX, "%s", ((maildir_store_conf_t *)gctx->conf)->inbox ),
 	        name, nfsnprintf( name, _POSIX_PATH_MAX, "INBOX" ) );
 }
@@ -265,10 +283,13 @@ maildir_list_inbox( store_t *gctx, int *flags )
 static int
 maildir_list_path( store_t *gctx, int *flags )
 {
+	const char *inbox = ((maildir_store_conf_t *)gctx->conf)->inbox;
 	char path[_POSIX_PATH_MAX], name[_POSIX_PATH_MAX];
 
+	if (maildir_validate_path( gctx->conf ) < 0)
+		return -1;
 	return maildir_list_recurse(
-	        gctx, 0, flags, ((maildir_store_conf_t *)gctx->conf)->inbox,
+	        gctx, 0, flags, inbox, strlen( inbox ),
 	        path, nfsnprintf( path, _POSIX_PATH_MAX, "%s", gctx->conf->path ),
 	        name, 0 );
 }
@@ -394,9 +415,9 @@ maildir_validate( const char *box, int create, maildir_store_t *ctx )
 
 #ifdef USE_DB
 static void
-make_key( DBT *tkey, char *name )
+make_key( const char *info_stop, DBT *tkey, char *name )
 {
-	char *u = strpbrk( name, ":," );
+	char *u = strpbrk( name, info_stop );
 	tkey->data = name;
 	tkey->size = u ? (size_t)(u - name) : strlen( name );
 }
@@ -420,7 +441,7 @@ maildir_set_uid( maildir_store_t *ctx, const char *name, int *uid )
 		return DRV_BOX_BAD;
 	}
 	if (uid) {
-		make_key( &key, (char *)name );
+		make_key( ((maildir_store_conf_t *)ctx->gen.conf)->info_stop, &key, (char *)name );
 		value.data = uid;
 		value.size = sizeof(*uid);
 		if ((ret = ctx->db->put( ctx->db, 0, &key, &value, 0 )))
@@ -596,6 +617,7 @@ maildir_compare( const void *l, const void *r )
 static int
 maildir_scan( maildir_store_t *ctx, msglist_t *msglist )
 {
+	maildir_store_conf_t *conf = (maildir_store_conf_t *)ctx->gen.conf;
 	DIR *d;
 	FILE *f;
 	struct dirent *e;
@@ -675,7 +697,7 @@ maildir_scan( maildir_store_t *ctx, msglist_t *msglist )
 				ctx->gen.recent += i;
 #ifdef USE_DB
 				if (ctx->db) {
-					make_key( &key, e->d_name );
+					make_key( conf->info_stop, &key, e->d_name );
 					if ((ret = ctx->db->get( ctx->db, 0, &key, &value, 0 ))) {
 						if (ret != DB_NOTFOUND) {
 							ctx->db->err( ctx->db, ret, "Maildir error: db->get()" );
@@ -749,7 +771,7 @@ maildir_scan( maildir_store_t *ctx, msglist_t *msglist )
 							ctx->db->err( ctx->db, ret, "Maildir error: db->c_get()" );
 						break;
 					}
-					if ((key.size != 11 || memcmp( key.data, "UIDVALIDITY", 11 )) &&
+					if (!equals( key.data, key.size, "UIDVALIDITY", 11 ) &&
 					    (ret = tdb->get( tdb, 0, &key, &value, 0 ))) {
 						if (ret != DB_NOTFOUND) {
 							tdb->err( tdb, ret, "Maildir error: tdb->get()" );
@@ -815,7 +837,7 @@ maildir_scan( maildir_store_t *ctx, msglist_t *msglist )
 				if ((u = strstr( entry->base, ",U=" )))
 					for (ru = u + 3; isdigit( (unsigned char)*ru ); ru++);
 				else
-					u = ru = strchr( entry->base, ':' );
+					u = ru = strchr( entry->base, conf->info_delimiter );
 				fnl = (u ?
 					nfsnprintf( buf + bl, sizeof(buf) - bl, "%s/%.*s,U=%d%s", subdirs[entry->recent], (int)(u - entry->base), entry->base, uid, ru ) :
 					nfsnprintf( buf + bl, sizeof(buf) - bl, "%s/%s,U=%d", subdirs[entry->recent], entry->base, uid ))
@@ -858,7 +880,7 @@ maildir_scan( maildir_store_t *ctx, msglist_t *msglist )
 				while (fgets( nbuf, sizeof(nbuf), f )) {
 					if (!nbuf[0] || nbuf[0] == '\n')
 						break;
-					if (!memcmp( nbuf, "X-TUID: ", 8 ) && nbuf[8 + TUIDL] == '\n') {
+					if (starts_with( nbuf, -1, "X-TUID: ", 8 ) && nbuf[8 + TUIDL] == '\n') {
 						memcpy( entry->tuid, nbuf + 8, TUIDL );
 						break;
 					}
@@ -887,7 +909,7 @@ maildir_init_msg( maildir_store_t *ctx, maildir_message_t *msg, msg_t *entry )
 		msg->gen.status |= M_RECENT;
 	if (ctx->gen.opts & OPEN_FLAGS) {
 		msg->gen.status |= M_FLAGS;
-		msg->gen.flags = maildir_parse_flags( msg->base );
+		msg->gen.flags = maildir_parse_flags( ((maildir_store_conf_t *)ctx->gen.conf)->info_prefix, msg->base );
 	} else
 		msg->gen.flags = 0;
 }
@@ -905,7 +927,7 @@ maildir_app_msg( maildir_store_t *ctx, message_t ***msgapp, msg_t *entry )
 }
 
 static void
-maildir_select( store_t *gctx, int create,
+maildir_select( store_t *gctx, const char *name, int create,
                 void (*cb)( int sts, void *aux ), void *aux )
 {
 	maildir_store_t *ctx = (maildir_store_t *)gctx;
@@ -922,10 +944,16 @@ maildir_select( store_t *gctx, int create,
 #ifdef USE_DB
 	ctx->db = 0;
 #endif /* USE_DB */
-	gctx->path =
-		(!memcmp( gctx->name, "INBOX", 5 ) && (!gctx->name[5] || gctx->name[5] == '/')) ?
-			maildir_join_path( ((maildir_store_conf_t *)gctx->conf)->inbox, gctx->name + 5 ) :
-			maildir_join_path( gctx->conf->path, gctx->name );
+	if (starts_with( name, -1, "INBOX", 5 ) && (!name[5] || name[5] == '/')) {
+		gctx->path = maildir_join_path( ((maildir_store_conf_t *)gctx->conf)->inbox, name + 5 );
+	} else {
+		if (maildir_validate_path( gctx->conf ) < 0) {
+			maildir_invoke_bad_callback( gctx );
+			cb( DRV_CANCELED, aux );
+			return;
+		}
+		gctx->path = maildir_join_path( gctx->conf->path, name );
+	}
 
 	if ((ret = maildir_validate( gctx->path, create, ctx )) != DRV_OK) {
 		cb( ret, aux );
@@ -1152,16 +1180,16 @@ maildir_fetch_msg( store_t *gctx, message_t *gmsg, msg_data_t *data,
 	}
 	close( fd );
 	if (!(gmsg->status & M_FLAGS))
-		data->flags = maildir_parse_flags( msg->base );
+		data->flags = maildir_parse_flags( ((maildir_store_conf_t *)gctx->conf)->info_prefix, msg->base );
 	cb( DRV_OK, aux );
 }
 
 static int
-maildir_make_flags( int flags, char *buf )
+maildir_make_flags( char info_delimiter, int flags, char *buf )
 {
 	unsigned i, d;
 
-	buf[0] = ':';
+	buf[0] = info_delimiter;
 	buf[1] = '2';
 	buf[2] = ',';
 	for (d = 3, i = 0; i < as(Flags); i++)
@@ -1206,7 +1234,7 @@ maildir_store_msg( store_t *gctx, msg_data_t *data, int to_trash,
 		box = ctx->trash;
 	}
 
-	maildir_make_flags( data->flags, fbuf );
+	maildir_make_flags( ((maildir_store_conf_t *)gctx->conf)->info_delimiter, data->flags, fbuf );
 	nfsnprintf( buf, sizeof(buf), "%s/tmp/%s%s", box, base, fbuf );
 	if ((fd = open( buf, O_WRONLY|O_CREAT|O_EXCL, 0600 )) < 0) {
 		if (errno != ENOENT || !to_trash) {
@@ -1277,6 +1305,7 @@ static void
 maildir_set_flags( store_t *gctx, message_t *gmsg, int uid ATTR_UNUSED, int add, int del,
                    void (*cb)( int sts, void *aux ), void *aux )
 {
+	maildir_store_conf_t *conf = (maildir_store_conf_t *)gctx->conf;
 	maildir_store_t *ctx = (maildir_store_t *)gctx;
 	maildir_message_t *msg = (maildir_message_t *)gmsg;
 	char *s, *p;
@@ -1294,7 +1323,7 @@ maildir_set_flags( store_t *gctx, message_t *gmsg, int uid ATTR_UNUSED, int add,
 			oob();
 		memcpy( buf + bl, msg->base, ol + 1 );
 		memcpy( nbuf + bl, msg->base, ol + 1 );
-		if ((s = strstr( nbuf + bl, ":2," ))) {
+		if ((s = strstr( nbuf + bl, conf->info_prefix ))) {
 			s += 3;
 			fl = ol - (s - (nbuf + bl));
 			for (i = 0; i < as(Flags); i++) {
@@ -1312,7 +1341,7 @@ maildir_set_flags( store_t *gctx, message_t *gmsg, int uid ATTR_UNUSED, int add,
 			}
 			tl = ol + 3 + fl;
 		} else {
-			tl = ol + maildir_make_flags( msg->gen.flags, nbuf + bl + ol );
+			tl = ol + maildir_make_flags( conf->info_delimiter, msg->gen.flags, nbuf + bl + ol );
 		}
 		if (!rename( buf, nbuf ))
 			break;
@@ -1337,7 +1366,7 @@ maildir_purge_msg( maildir_store_t *ctx, const char *name )
 {
 	int ret;
 
-	make_key( &key, (char *)name );
+	make_key( ((maildir_store_conf_t *)ctx->gen.conf)->info_stop, &key, (char *)name );
 	if ((ret = ctx->db->del( ctx->db, 0, &key, 0 ))) {
 		ctx->db->err( ctx->db, ret, "Maildir error: db->del()" );
 		return DRV_BOX_BAD;
@@ -1359,7 +1388,7 @@ maildir_trash_msg( store_t *gctx, message_t *gmsg,
 
 	for (;;) {
 		nfsnprintf( buf, sizeof(buf), "%s/%s/%s", gctx->path, subdirs[gmsg->status & M_RECENT], msg->base );
-		s = strstr( msg->base, ":2," );
+		s = strstr( msg->base, ((maildir_store_conf_t *)gctx->conf)->info_prefix );
 		nfsnprintf( nbuf, sizeof(nbuf), "%s/%s/%ld.%d_%d.%s%s", ctx->trash,
 		            subdirs[gmsg->status & M_RECENT], (long)time( 0 ), Pid, ++MaildirCount, Hostname, s ? s : "" );
 		if (!rename( buf, nbuf ))
@@ -1459,6 +1488,7 @@ maildir_parse_store( conffile_t *cfg, store_conf_t **storep )
 	if (strcasecmp( "MaildirStore", cfg->cmd ))
 		return 0;
 	store = nfcalloc( sizeof(*store) );
+	store->info_delimiter = FieldDelimiter;
 	store->gen.driver = &maildir_driver;
 	store->gen.name = nfstrdup( cfg->val );
 
@@ -1471,10 +1501,24 @@ maildir_parse_store( conffile_t *cfg, store_conf_t **storep )
 		else if (!strcasecmp( "AltMap", cfg->cmd ))
 			store->alt_map = parse_bool( cfg );
 #endif /* USE_DB */
-		else
+		else if (!strcasecmp( "InfoDelimiter", cfg->cmd )) {
+			if (strlen( cfg->val ) != 1) {
+				error( "%s:%d: Info delimiter must be exactly one character long\n", cfg->file, cfg->line );
+				cfg->err = 1;
+				continue;
+			}
+			store->info_delimiter = cfg->val[0];
+			if (!ispunct( store->info_delimiter )) {
+				error( "%s:%d: Info delimiter must be a punctuation character\n", cfg->file, cfg->line );
+				cfg->err = 1;
+				continue;
+			}
+		} else
 			parse_generic_store( &store->gen, cfg );
 	if (!store->inbox)
 		store->inbox = expand_strdup( "~/Maildir" );
+	nfasprintf( &store->info_prefix, "%c2,", store->info_delimiter );
+	nfasprintf( &store->info_stop, "%c,", store->info_delimiter );
 	*storep = &store->gen;
 	return 1;
 }

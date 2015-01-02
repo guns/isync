@@ -147,12 +147,13 @@ typedef struct sync_rec {
 typedef struct {
 	int t[2];
 	void (*cb)( int sts, void *aux ), *aux;
-	char *dname, *jname, *nname, *lname;
+	char *dname, *jname, *nname, *lname, *box_name[2];
 	FILE *jfp, *nfp;
 	sync_rec_t *srecs, **srecadd;
 	channel_conf_t *chan;
 	store_t *ctx[2];
 	driver_t *drv[2];
+	const char *orig_name[2];
 	int state[2], ref_count, nsrecs, ret, lfd;
 	int new_total[2], new_done[2];
 	int flags_total[2], flags_done[2];
@@ -315,7 +316,7 @@ msg_fetched( int sts, void *aux )
 					if (c == '\r')
 						lcrs++;
 					else if (c == '\n') {
-						if (!memcmp( fmap + start, "X-TUID: ", 8 )) {
+						if (starts_with( fmap + start, len - start, "X-TUID: ", 8 )) {
 							extra = (sbreak = start) - (ebreak = i);
 							goto oke;
 						}
@@ -598,15 +599,14 @@ sync_boxes( store_t *ctx[], const char *names[], channel_conf_t *chan,
 	svars->uidval[0] = svars->uidval[1] = -1;
 	svars->srecadd = &svars->srecs;
 
-	ctx[0]->name = ctx[1]->name = 0;
 	for (t = 0; t < 2; t++) {
-		ctx[t]->orig_name =
+		svars->orig_name[t] =
 			(!names[t] || (ctx[t]->conf->map_inbox && !strcmp( ctx[t]->conf->map_inbox, names[t] ))) ?
 				"INBOX" : names[t];
 		if (!ctx[t]->conf->flat_delim) {
-			ctx[t]->name = nfstrdup( ctx[t]->orig_name );
-		} else if (map_name( ctx[t]->orig_name, &ctx[t]->name, 0, "/", ctx[t]->conf->flat_delim ) < 0) {
-			error( "Error: canonical mailbox name '%s' contains flattened hierarchy delimiter\n", ctx[t]->orig_name );
+			svars->box_name[t] = nfstrdup( svars->orig_name[t] );
+		} else if (map_name( svars->orig_name[t], &svars->box_name[t], 0, "/", ctx[t]->conf->flat_delim ) < 0) {
+			error( "Error: canonical mailbox name '%s' contains flattened hierarchy delimiter\n", svars->orig_name[t] );
 			svars->ret = SYNC_FAIL;
 			sync_bail3( svars );
 			return;
@@ -619,8 +619,8 @@ sync_boxes( store_t *ctx[], const char *names[], channel_conf_t *chan,
 	 * don't run into uninitialized variables. */
 	sync_ref( svars );
 	for (t = 0; t < 2; t++) {
-		info( "Selecting %s %s...\n", str_ms[t], ctx[t]->orig_name );
-		svars->drv[t]->select( ctx[t], (chan->ops[t] & OP_CREATE) != 0, box_selected, AUX );
+		info( "Selecting %s %s...\n", str_ms[t], svars->orig_name[t] );
+		svars->drv[t]->select( ctx[t], svars->box_name[t], (chan->ops[t] & OP_CREATE) != 0, box_selected, AUX );
 		if (check_cancel( svars ))
 			break;
 	}
@@ -665,13 +665,14 @@ box_selected( int sts, void *aux )
 		}
 		nfasprintf( &svars->dname, "%s/." EXE "state", ctx[S]->path );
 	} else {
-		csname = clean_strdup( ctx[S]->name );
+		csname = clean_strdup( svars->box_name[S] );
 		if (chan->sync_state)
 			nfasprintf( &svars->dname, "%s%s", chan->sync_state, csname );
 		else {
-			cmname = clean_strdup( ctx[M]->name );
-			nfasprintf( &svars->dname, "%s:%s:%s_:%s:%s", global_conf.sync_state,
-			            chan->stores[M]->name, cmname, chan->stores[S]->name, csname );
+			char c = FieldDelimiter;
+			cmname = clean_strdup( svars->box_name[M] );
+			nfasprintf( &svars->dname, "%s%c%s%c%s_%c%s%c%s", global_conf.sync_state,
+			            c, chan->stores[M]->name, c, cmname, c, chan->stores[S]->name, c, csname );
 			free( cmname );
 		}
 		free( csname );
@@ -704,7 +705,7 @@ box_selected( int sts, void *aux )
 	}
 	if (fcntl( svars->lfd, F_SETLK, &lck )) {
 		error( "Error: channel :%s:%s-:%s:%s is locked\n",
-		         chan->stores[M]->name, ctx[M]->orig_name, chan->stores[S]->name, ctx[S]->orig_name );
+		         chan->stores[M]->name, svars->orig_name[M], chan->stores[S]->name, svars->orig_name[S] );
 		svars->ret = SYNC_FAIL;
 		sync_bail1( svars );
 		return;
@@ -803,7 +804,7 @@ box_selected( int sts, void *aux )
 				error( "Error: incomplete journal header in %s\n", svars->jname );
 				goto jbail;
 			}
-			if (memcmp( buf, JOURNAL_VERSION "\n", strlen(JOURNAL_VERSION) + 1 )) {
+			if (!equals( buf, t, JOURNAL_VERSION "\n", strlen(JOURNAL_VERSION) + 1 )) {
 				error( "Error: incompatible journal version "
 				                 "(got %.*s, expected " JOURNAL_VERSION ")\n", t - 1, buf );
 				goto jbail;
@@ -1404,7 +1405,7 @@ box_loaded( int sts, void *aux )
 		if (svars->chan->expire_unread < 0 && (unsigned)alive * 2 > svars->chan->max_messages) {
 			error( "%s: %d unread messages in excess of MaxMessages (%d).\n"
 			       "Please set ExpireUnread to decide outcome. Skipping mailbox.\n",
-			       svars->ctx[S]->orig_name, alive, svars->chan->max_messages );
+			       svars->orig_name[S], alive, svars->chan->max_messages );
 			svars->ret |= SYNC_FAIL;
 			cancel_sync( svars );
 			return;
@@ -1919,8 +1920,8 @@ sync_bail2( sync_vars_t *svars )
 static void
 sync_bail3( sync_vars_t *svars )
 {
-	free( svars->ctx[M]->name );
-	free( svars->ctx[S]->name );
+	free( svars->box_name[M] );
+	free( svars->box_name[S] );
 	sync_deref( svars );
 }
 
